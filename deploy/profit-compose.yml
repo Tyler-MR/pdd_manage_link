@@ -1,0 +1,43 @@
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    container_name: pdd-profit-api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    expose:
+      - "8090"
+    # 供宿主机上的旧 8080 兼容服务转发使用；不直接暴露到公网。
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      PROFIT_DELIST_FILE: /app/data/delist_tasks.json
+      PROFIT_ADJUST_FILE: /app/data/promotion_adjust_tasks.json
+      PROFIT_OPERATION_FILE: /app/data/operation_tasks.json
+    volumes:
+      # 下架任务是运行时数据，不提交到 Git；挂载宿主机文件以保留现有队列。
+      - ../delist_tasks.json:/app/data/delist_tasks.json
+      - ../promotion_adjust_tasks.json:/app/data/promotion_adjust_tasks.json
+      - ../operation_tasks.json:/app/data/operation_tasks.json
+    networks:
+      - profit
+
+  web:
+    image: nginx:alpine
+    container_name: pdd-profit-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "127.0.0.1:8081:80"
+    volumes:
+      - ../profit-dashboard-vue/dist:/usr/share/nginx/html:ro
+      - ./nginx-profit.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - profit
+
+networks:
+  profit:
+    name: pdd-profit-network

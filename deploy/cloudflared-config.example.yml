@@ -1,0 +1,10 @@
+# Copy this file to your local cloudflared configuration directory and replace
+# the tunnel ID, credentials file and hostname for your own environment.
+tunnel: REPLACE_WITH_TUNNEL_ID
+credentials-file: C:\path\to\REPLACE_WITH_TUNNEL_CREDENTIALS.json
+
+ingress:
+  - hostname: dashboard.example.com
+    # profit-compose.yml publishes the Nginx web gateway on host port 8081.
+    service: http://127.0.0.1:8081
+  - service: http_status:404
