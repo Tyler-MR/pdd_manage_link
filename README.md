@@ -89,7 +89,7 @@ npm.cmd run dev
 ## 公共演示模式
 
 仓库内提供了一个脱敏周期，其他协作者无需访问私有 MySQL 数据库即可
-克隆并查看看板。当前演示周期为 `2026-07-01` 至 `2026-07-14`。
+克隆并查看看板。当前演示周期为最近 30 个可用数据日：`2026-07-02` 至 `2026-07-31`。
 
 使用演示数据启动 Vue：
 
@@ -108,7 +108,7 @@ fixture 位于 `profit-dashboard-vue/public/demo-data/`，包含看板聚合数�
 从本机 ETL 缓存重新导出其他周期：
 
 ```powershell
-python tools/export_demo_data.py --start 2026-07-01 --end 2026-07-14
+python tools/export_demo_data.py --start 2026-07-02 --end 2026-07-31
 ```
 
 原始 Excel、数据库凭据和数据库备份不会进入公共仓库。

@@ -3,7 +3,7 @@ import { computed, ref } from 'vue';
 const apiBase = import.meta.env.VITE_API_BASE || '';
 const demoMode = import.meta.env.VITE_DEMO_MODE === 'true';
 const demoBase = `${import.meta.env.BASE_URL || './'}demo-data`;
-const demoPeriod = '2026-07-01_2026-07-14';
+const demoPeriod = '2026-07-02_2026-07-31';
 const demoCache = new Map();
 
 const demoKeys = {

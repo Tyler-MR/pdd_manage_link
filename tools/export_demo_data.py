@@ -213,7 +213,7 @@ def link_dashboard_payload(df: pd.DataFrame, start: str, end: str) -> dict[str, 
 
 def write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(json_safe(payload), ensure_ascii=False, allow_nan=False, indent=2), encoding="utf-8")
+    path.write_text(json.dumps(json_safe(payload), ensure_ascii=False, allow_nan=False, separators=(",", ":")), encoding="utf-8")
 
 
 def export(source_dir: Path, output_dir: Path, start: str, end: str) -> None:
@@ -264,8 +264,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-dir", type=Path, default=ROOT / "cache_v3_etl" / "etl")
     parser.add_argument("--output-dir", type=Path, default=ROOT / "profit-dashboard-vue" / "public" / "demo-data")
-    parser.add_argument("--start", default="2026-07-01")
-    parser.add_argument("--end", default="2026-07-14")
+    parser.add_argument("--start", default="2026-07-02")
+    parser.add_argument("--end", default="2026-07-31")
     args = parser.parse_args()
     if args.start > args.end:
         parser.error("--start must be earlier than or equal to --end")
