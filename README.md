@@ -31,11 +31,11 @@ Copy-Item .env.example .env
 
 至少需要配置数据库连接：`DB_HOST`、`DB_PORT`、`DB_USER`、`DB_PASSWORD`、`DB_PROFIT_DATABASE`。`.env` 不得提交到 Git。
 
-如果只使用数据库中已有的数据，可以不配置网络文件目录；ETL 自动同步功能需要配置 `PROFIT_NETWORK_BASE` 和 `PROFIT_PROMOTION_BASE`。
+如果只使用数据库中已有的数据，可以不配置网络文件目录；ETL 自动同步功能需要配置 `PROFIT_NETWORK_BASE`、`PROFIT_PROMOTION_BASE` 和 `PROFIT_LINK_INFO_BASE`。
 
 ## 本地利润率数据定时更新
 
-利润率 ETL 在 Windows 本地电脑执行：先读取共享目录，再清洗 Excel 并写入 `bi.pdd_web_profit_data`，Linux 只负责读取 MySQL 提供 API。
+利润率 ETL 在 Windows 本地电脑执行：利润率只读取 `PROFIT_NETWORK_BASE` 下各月份文件夹内的 xlsx，推广只读取 `PROFIT_PROMOTION_BASE` 下的小时推广 xlsx；链接信息只读取 `PROFIT_LINK_INFO_BASE`，将最新数据文件放在前面合并，并按 `链接ID` 去重保留第一条，写入 `bi.pdd_link_info`。Linux 只负责读取 MySQL 提供 API。
 
 运行脚本：
 
@@ -86,32 +86,7 @@ npm.cmd run dev
 
 访问 `http://localhost:5173`。
 
-## 公共演示模式
-
-仓库内提供了一个脱敏周期，其他协作者无需访问私有 MySQL 数据库即可
-克隆并查看看板。当前演示周期为最近 30 个可用数据日：`2026-07-02` 至 `2026-07-31`。
-
-使用演示数据启动 Vue：
-
-```powershell
-cd profit-dashboard-vue
-$env:VITE_DEMO_MODE="true"
-npm.cmd ci
-npm.cmd run dev
-```
-
-fixture 位于 `profit-dashboard-vue/public/demo-data/`，包含看板聚合数据、
-链接趋势数据，以及所选周期的一行一日链接明细。负责人、店铺、商品和链接
-标识均已匿名化；金额和指标保留用于界面与图表测试。演示模式下目标修改和
-下架操作只保留在当前浏览器会话中。
-
-从本机 ETL 缓存重新导出其他周期：
-
-```powershell
-python tools/export_demo_data.py --start 2026-07-02 --end 2026-07-31
-```
-
-原始 Excel、数据库凭据和数据库备份不会进入公共仓库。
+看板所有业务数据均从配置的 MySQL 数据库读取。原始 Excel、数据库凭据和数据库备份不会进入公共仓库。
 
 ## 生产构建
 
