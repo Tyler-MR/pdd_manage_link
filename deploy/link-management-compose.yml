@@ -1,8 +1,11 @@
+name: link-management
+
 services:
   api:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
+    image: link-management-api:latest
     container_name: link-management-api
     restart: unless-stopped
     env_file:

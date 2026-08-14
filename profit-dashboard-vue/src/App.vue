@@ -1,4 +1,4 @@
-<template>
+﻿<template>
   <div class="app-shell">
     <aside class="sidebar" :class="{ collapsed: sidebarCollapsed }">
       <div class="brand-row">
@@ -40,7 +40,6 @@
 
       <template v-else>
         <section class="toolbar panel-lite">
-          <div class="toolbar-title"><span class="toolbar-icon">⌁</span><div><strong>数据日期范围</strong><span>{{ rangeHint }}</span></div></div>
           <div class="toolbar-body">
             <div class="range-controls" aria-label="数据日期筛选">
               <label>数据日期开始 <input v-model="dateStart" type="date" :min="availableDates[0]" :max="availableDates.at(-1)" title="按数据日期筛选开始日期" /></label>
@@ -54,14 +53,20 @@
             <div class="filter-controls" aria-label="维度筛选">
               <label>链接 ID <input v-model="globalFilters.link_ids" placeholder="支持逗号分隔" /></label>
               <label>商品编码 <input v-model="globalFilters.product_code" placeholder="如 FG2" /></label>
-          <label>单量 <input v-model="globalFilters.product_name" placeholder="输入标题关键词" /></label>
+              <label>单量 <input v-model="globalFilters.orders" type="number" min="0" step="1" inputmode="numeric" placeholder="请输入单量" title="按当前日期范围汇总后的单量精确筛选" /></label>
               <label>品牌 <select v-model="globalFilters.brand"><option value="">全部品牌</option><option v-for="brand in brandOptions" :key="brand" :value="brand">{{ brand }}</option></select></label>
               <label>店铺名称 <input v-model="globalFilters.store_name" placeholder="输入店铺名称" /></label>
               <label>负责人 <select v-model="globalFilters.store_person"><option value="">全部负责人</option><option v-for="person in peopleNames" :key="person" :value="person">{{ person }}</option></select></label>
+              <label class="link-preset-filter">链接筛选
+                <select v-model="activeLinkPresetId" :disabled="!linkFilterPresets.length" title="选择管理中台已保存的链接筛选条件" @change="applyLinkPreset">
+                  <option value="">全部链接</option>
+                  <option v-for="preset in linkFilterPresets" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
+                </select>
+              </label>
           <button class="button primary compact" :disabled="loading" @click="applyRange">{{ loading ? '加载中…' : '搜索' }}</button>
               <button class="button secondary compact" :disabled="loading" @click="clearGlobalFilters">清除筛选</button>
-              <button class="button adjust compact" :disabled="!selectedOperationIds.length" title="对当前已勾选链接调整投产" @click="openPromotionAdjust">📊 调整投产</button>
-              <button class="button danger compact" :disabled="!selectedOperationIds.length" title="下架当前已勾选链接" @click="submitSelectedLinks">📦 产品下架</button>
+              <button class="button adjust compact" :disabled="promotionDimension !== 'link' || !selectedOperationIds.length" title="对当前已勾选链接调整投产" @click="openPromotionAdjust">📊 调整投产</button>
+              <button class="button danger compact" :disabled="promotionDimension !== 'link' || !selectedOperationIds.length" title="下架当前已勾选链接" @click="openDelistConfirm">📦 产品下架</button>
             </div>
             <div class="creation-filter-row" aria-label="链接创建时间筛选">
               <label>链接创建时间 <select v-model="creationFilter.mode"><option value="age">截至昨日近 N 天</option><option value="custom">指定创建日期</option></select></label>
@@ -110,7 +115,7 @@
           <section class="promotion-kpi-shell" aria-label="推广指标卡片">
             <button type="button" class="promotion-kpi-arrow" aria-label="向左查看指标" @click="scrollPromotionKpis(-1)">‹</button>
             <div ref="promotionKpiTrack" class="promotion-kpi-track">
-              <button v-for="card in promotionKpiCards" :key="card.key" type="button" class="promotion-kpi-card" :class="{ active: promotionTrendOpen && promotionSelectedKpi === card.key }" :aria-pressed="promotionTrendOpen && promotionSelectedKpi === card.key" @click="openPromotionKpiTrend(card.key)">
+              <button v-for="card in orderedPromotionCards(promotionKpiCards)" :key="card.key" type="button" class="promotion-kpi-card" :class="{ active: promotionTrendOpen && promotionSelectedKpi === card.key, 'is-dragging': promotionCardDragKey === card.key }" :aria-pressed="promotionTrendOpen && promotionSelectedKpi === card.key" :title="`拖动调整${card.label}卡片顺序`" @click="handlePromotionCardClick($event, card.key)" @pointerdown="startPromotionCardPointerDrag($event, card.key)" @pointerenter="handlePromotionCardPointerEnter(card.key)" @pointermove="handlePromotionCardPointerEnter(card.key)" @mouseenter="handlePromotionCardPointerEnter(card.key)" @pointerup="endPromotionCardPointerDrag" @pointercancel="endPromotionCardPointerDrag">
                 <span>{{ card.label }}</span><strong>{{ card.value }}</strong><em>{{ card.note }}</em>
               </button>
             </div>
@@ -137,7 +142,10 @@
           </section>
 
           <section class="panel promotion-list-panel">
-            <div class="panel-heading promotion-list-heading"><div><h2>链接经营明细</h2><p>按链接 ID 汇总链接信息、利润日数据与推广小时数据；点击“数据”查看每日/小时明细</p></div><div class="promotion-list-actions"><button type="button" class="button secondary compact" @click="openPromotionColumnConfig">字段设置</button><button type="button" class="button secondary compact" @click="promotionReportOpen = true">报表说明</button></div></div>
+            <div class="panel-heading promotion-list-heading"><div><h2>链接经营明细</h2><p>按{{ promotionDimensionLabel }}维度汇总链接信息、利润日数据与推广小时数据；点击“数据”查看每日/小时明细</p></div><div class="promotion-list-actions"><button type="button" class="button secondary compact" @click="openPromotionColumnConfig">字段设置</button><button type="button" class="button secondary compact" @click="promotionReportOpen = true">报表说明</button></div></div>
+            <div class="promotion-dimension-tabs" role="tablist" aria-label="多维度查看">
+              <button v-for="dimension in promotionDimensions" :key="dimension.key" type="button" role="tab" class="promotion-dimension-tab" :class="{ active: promotionDimension === dimension.key }" :aria-selected="promotionDimension === dimension.key" @click="setPromotionDimension(dimension.key)">{{ dimension.label }}</button>
+            </div>
             <div v-if="promotionColumnsOpen" class="promotion-columns-backdrop" @click.self="cancelPromotionColumnConfig">
               <section class="promotion-columns-dialog panel" role="dialog" aria-modal="true" aria-labelledby="promotion-columns-title">
                 <div class="promotion-columns-dialog-head"><div><span class="promotion-columns-kicker">CUSTOM DATA ITEMS</span><h2 id="promotion-columns-title">自定义数据项</h2><p>选择表格字段，并在右侧调整展示顺序。</p></div><button type="button" class="modal-close" aria-label="关闭字段设置" @click="cancelPromotionColumnConfig">×</button></div>
@@ -148,7 +156,7 @@
                 <div class="promotion-columns-dialog-foot"><button type="button" class="button secondary" @click="cancelPromotionColumnConfig">取消</button><button type="button" class="button secondary" @click="savePromotionColumnTemplate">保存为模板</button><button type="button" class="button primary" @click="applyPromotionColumnConfig">确定</button></div>
               </section>
             </div>
-            <div class="promotion-table-scroll"><table class="promotion-table"><thead><tr><th><input type="checkbox" :checked="allPromotionSelected" @change="toggleAllPromotion" /></th><th v-for="column in visiblePromotionColumns" :key="column.key" :class="{ 'promotion-sortable-header': column.sortable !== false }" :aria-sort="promotionSort.key === column.key ? (promotionSort.order === 'asc' ? 'ascending' : 'descending') : 'none'"><button v-if="column.sortable !== false" type="button" class="promotion-sort-button" :class="{ active: promotionSort.key === column.key }" :title="`按${column.label}排序：第一次点击升序，再次点击降序`" @click="changePromotionSort(column.key)"><span>{{ column.label }}</span><span class="promotion-sort-arrow" aria-hidden="true">{{ promotionSort.key === column.key ? (promotionSort.order === 'asc' ? '↑' : '↓') : '↕' }}</span></button><span v-else>{{ column.label }}</span></th><th>操作</th></tr></thead><tbody><template v-for="row in pagedPromotionRows" :key="row.linkId"><tr :class="{ 'promotion-row-active': promotionExpandedKey === row.linkId }" @click="openPromotionRowDrawer(row)"><td><input v-model="selectedPromotionIds" type="checkbox" :value="row.linkId" @click.stop /></td><td v-for="column in visiblePromotionColumns" :key="column.key" :class="column.tone"><template v-if="column.key === 'imageUrl'"><img v-if="row.imageUrl" :src="row.imageUrl" class="promotion-link-thumb" alt="链接主图" /><span v-else>—</span></template><template v-else>{{ formatPromotionValue(row[column.key], column) }}</template></td><td class="promotion-row-actions"><button type="button" class="promotion-link-button" @click.stop="togglePromotionDetails(row, 'detail')">详情</button><button type="button" class="promotion-link-button" @click.stop="togglePromotionDetails(row, 'data')">数据</button><button type="button" class="promotion-link-button" @click.stop="togglePromotionDetails(row, 'more')">更多</button></td></tr><tr v-if="promotionExpandedKey === row.linkId" class="promotion-expanded-row"><td :colspan="visiblePromotionColumns.length + 2"><div class="promotion-expanded-panel"><div class="promotion-expanded-head"><div><strong>{{ promotionExpandedModeLabel }} · {{ row.title }}</strong><span>链接 ID：{{ row.linkId }} · {{ row.brand }} · {{ row.person }}</span></div><button type="button" class="icon-button" aria-label="关闭详情" @click="closePromotionDetails">×</button></div><div v-if="promotionExpandedMode === 'detail'" class="promotion-detail-grid"><div><span>商品编码</span><strong>{{ row.productCode || '—' }}</strong></div><div><span>推广状态</span><strong>{{ row.status }}</strong></div><div><span>推广阶段</span><strong>{{ row.stage }}</strong></div><div><span>净目标投产比</span><strong>{{ row.targetRoi == null ? '—' : Number(row.targetRoi).toFixed(2) }}</strong></div></div><div v-else-if="promotionExpandedMode === 'data'" class="promotion-data-panel"><div class="promotion-hourly-head"><div><strong>分小时数据</strong><span>源数据粒度：数据日期 + 小时</span></div><div class="promotion-hourly-controls"><label>数据日期<select class="promotion-hour-date-select" v-model="promotionHourDate"><option value="all">全部数据日期</option><option v-for="date in promotionHourlyDates" :key="date" :value="date">{{ date }}</option></select></label><label>小时<select v-model="promotionHourPreset"><option value="all">全部小时</option><option v-for="hour in promotionHourOptions" :key="hour" :value="hour">{{ hour }}:00</option></select></label></div></div><div class="promotion-mini-metrics"><span>当前日期<strong>{{ promotionHourDate === 'all' ? '全部' : promotionHourDate }}</strong></span><span>源数据行<strong>{{ promotionHourlyRows.length.toLocaleString() }}</strong></span><span>当前筛选范围<strong>{{ promotionFilters.start }} 至 {{ promotionFilters.end }}</strong></span></div><div v-if="promotionHourlyLoading" class="empty-cell">正在加载真实分小时数据…</div><div v-else-if="promotionHourlyError" class="empty-cell">{{ promotionHourlyError }}</div><div v-else class="promotion-hourly-table-scroll"><table class="promotion-hourly-table"><thead><tr><th>数据日期</th><th>小时</th><th>曝光量</th><th>点击量</th><th>成交笔数</th><th>花费(元)</th><th>交易额(元)</th><th>投产比</th></tr></thead><tbody><tr v-for="item in promotionHourlyRows" :key="`${item.date}-${item.hour}-${item.productId}`"><td>{{ item.date }}</td><td>{{ item.hour }}</td><td>{{ Number(item.impressions || 0).toLocaleString() }}</td><td>{{ Number(item.clicks || 0).toLocaleString() }}</td><td>{{ Number(item.orders || 0).toLocaleString() }}</td><td>{{ Number(item.spend || 0).toFixed(2) }}</td><td>{{ Number(item.revenue || 0).toFixed(2) }}</td><td :class="row.targetRoi != null && item.roi >= row.targetRoi ? 'rate-positive' : 'rate-neutral'">{{ Number(item.roi || 0).toFixed(2) }}</td></tr><tr v-if="!promotionHourlyRows.length"><td colspan="8" class="empty-cell">当前商品在所选日期范围内暂无分小时源数据</td></tr></tbody></table></div></div><div v-else class="promotion-more-menu"><button type="button" @click="promotionNotice('已标记为重点观察')">标记为重点观察</button><button type="button" @click="promotionNotice('已打开调投产入口')">调整投产</button><button type="button" @click="promotionNotice('已复制商品 ID')">复制商品 ID</button></div></div></td></tr></template><tr v-if="!promotionLoading && !pagedPromotionRows.length"><td :colspan="visiblePromotionColumns.length + 2" class="empty-cell">当前筛选条件下暂无推广商品</td></tr></tbody></table></div>
+            <div class="promotion-table-scroll"><table class="promotion-table"><thead><tr><th><input type="checkbox" :checked="allPromotionSelected" :disabled="promotionDimension !== 'link'" aria-label="全选当前筛选结果" title="全选当前筛选结果（包含所有分页）" @change="toggleAllPromotion" /></th><th v-for="column in visiblePromotionColumns" :key="column.key" :class="{ 'promotion-sortable-header': column.sortable !== false }" :aria-sort="promotionSort.key === column.key ? (promotionSort.order === 'asc' ? 'ascending' : 'descending') : 'none'"><button v-if="column.sortable !== false" type="button" class="promotion-sort-button" :class="{ active: promotionSort.key === column.key }" :title="`按${column.label}排序：第一次点击升序，再次点击降序`" @click="changePromotionSort(column.key)"><span>{{ column.label }}</span><span class="promotion-sort-arrow" aria-hidden="true">{{ promotionSort.key === column.key ? (promotionSort.order === 'asc' ? '↑' : '↓') : '↕' }}</span></button><span v-else>{{ column.label }}</span></th><th>操作</th></tr></thead><tbody><template v-for="row in pagedPromotionRows" :key="row.linkId"><tr :class="{ 'promotion-row-active': promotionExpandedKey === row.linkId }" @click="openPromotionRowDrawer(row)"><td><input v-model="selectedPromotionIds" type="checkbox" :value="row.linkId" :disabled="promotionDimension !== 'link'" :aria-label="`选择链接 ${row.linkId}`" @click.stop /></td><td v-for="column in visiblePromotionColumns" :key="column.key" :class="column.tone"><template v-if="column.key === 'imageUrl'"><button v-if="row.imageUrl" type="button" class="promotion-image-preview-button" :aria-label="`放大查看${row.title || '链接主图'}`" @click.stop="openPromotionImagePreview(row.imageUrl)"><img :src="row.imageUrl" class="promotion-link-thumb" alt="链接主图" /></button><span v-else>—</span></template><template v-else>{{ formatPromotionValue(row[column.key], column) }}</template></td><td class="promotion-row-actions"><button type="button" class="promotion-link-button" @click.stop="togglePromotionDetails(row, 'detail')">详情</button><button type="button" class="promotion-link-button" :disabled="promotionDimension !== 'link'" :title="promotionDimension === 'link' ? '查看每日/小时数据' : '请切换到链接维度查看小时数据'" @click.stop="togglePromotionDetails(row, 'data')">数据</button><button type="button" class="promotion-link-button" @click.stop="togglePromotionDetails(row, 'more')">更多</button></td></tr><tr v-if="promotionExpandedKey === row.linkId" class="promotion-expanded-row"><td :colspan="visiblePromotionColumns.length + 2"><div class="promotion-expanded-panel"><div class="promotion-expanded-head"><div><strong>{{ promotionExpandedModeLabel }} · {{ row.title }}</strong><span>链接 ID：{{ row.linkId }} · {{ row.brand }} · {{ row.person }}</span></div><button type="button" class="icon-button" aria-label="关闭详情" @click="closePromotionDetails">×</button></div><div v-if="promotionExpandedMode === 'detail'" class="promotion-detail-grid"><div><span>商品编码</span><strong>{{ row.productCode || '—' }}</strong></div><div><span>推广状态</span><strong>{{ row.status }}</strong></div><div><span>推广阶段</span><strong>{{ row.stage }}</strong></div><div><span>净目标投产比</span><strong>{{ row.targetRoi == null ? '—' : Number(row.targetRoi).toFixed(2) }}</strong></div></div><div v-else-if="promotionExpandedMode === 'data'" class="promotion-data-panel"><div class="promotion-hourly-head"><div><strong>分小时数据</strong><span>源数据粒度：数据日期 + 小时</span></div><div class="promotion-hourly-controls"><label>数据日期<select class="promotion-hour-date-select" v-model="promotionHourDate"><option value="all">全部数据日期</option><option v-for="date in promotionHourlyDates" :key="date" :value="date">{{ date }}</option></select></label><label>小时<select v-model="promotionHourPreset"><option value="all">全部小时</option><option v-for="hour in promotionHourOptions" :key="hour" :value="hour">{{ hour }}:00</option></select></label></div></div><div class="promotion-mini-metrics"><span>当前日期<strong>{{ promotionHourDate === 'all' ? '全部' : promotionHourDate }}</strong></span><span>源数据行<strong>{{ promotionHourlyRows.length.toLocaleString() }}</strong></span><span>当前筛选范围<strong>{{ promotionFilters.start }} 至 {{ promotionFilters.end }}</strong></span></div><div v-if="promotionHourlyLoading" class="empty-cell">正在加载真实分小时数据…</div><div v-else-if="promotionHourlyError" class="empty-cell">{{ promotionHourlyError }}</div><div v-else class="promotion-hourly-table-scroll"><table class="promotion-hourly-table"><thead><tr><th>数据日期</th><th>小时</th><th>曝光量</th><th>点击量</th><th>成交笔数</th><th>花费(元)</th><th>交易额(元)</th><th>投产比</th></tr></thead><tbody><tr v-for="item in promotionHourlyRows" :key="`${item.date}-${item.hour}-${item.productId}`"><td>{{ item.date }}</td><td>{{ item.hour }}</td><td>{{ Number(item.impressions || 0).toLocaleString() }}</td><td>{{ Number(item.clicks || 0).toLocaleString() }}</td><td>{{ Number(item.orders || 0).toLocaleString() }}</td><td>{{ Number(item.spend || 0).toFixed(2) }}</td><td>{{ Number(item.revenue || 0).toFixed(2) }}</td><td :class="row.targetRoi != null && item.roi >= row.targetRoi ? 'rate-positive' : 'rate-neutral'">{{ Number(item.roi || 0).toFixed(2) }}</td></tr><tr v-if="!promotionHourlyRows.length"><td colspan="8" class="empty-cell">当前商品在所选日期范围内暂无分小时源数据</td></tr></tbody></table></div></div><div v-else class="promotion-more-menu"><button type="button" @click="promotionNotice('已标记为重点观察')">标记为重点观察</button><button type="button" @click="promotionNotice('已打开调投产入口')">调整投产</button><button type="button" @click="promotionNotice('已复制商品 ID')">复制商品 ID</button><button type="button" class="danger" @click.stop="openRowDelistConfirm(row)">下架链接</button></div></div></td></tr></template><tr v-if="!promotionLoading && !pagedPromotionRows.length"><td :colspan="visiblePromotionColumns.length + 2" class="empty-cell">当前筛选条件下暂无推广商品</td></tr></tbody></table></div>
             <div class="promotion-table-footer"><span>第 {{ promotionPage }} / {{ promotionPages || 1 }} 页</span><label>每页<select v-model.number="promotionPageSize"><option :value="5">5 条</option><option :value="10">10 条</option><option :value="20">20 条</option></select></label><div class="link-pager"><button type="button" :disabled="promotionPage <= 1" @click="promotionPage -= 1">上一页</button><button type="button" :disabled="promotionPage >= promotionPages" @click="promotionPage += 1">下一页</button></div></div>
           </section>
         </section>
@@ -420,7 +428,7 @@
               <div class="filter-rows-wrap">
                 <div v-for="(filter, index) in linkFilters" :key="filter.id" class="link-filter-row">
                   <select v-model="filter.field" class="link-filter-field" @change="onLinkFilterFieldChange(filter)"><option value="">— 选择字段 —</option><option v-for="field in linkFilterFields" :key="field.key" :value="field.key">{{ field.label }}</option></select>
-                  <select v-if="linkFilterType(filter) !== 'text'" v-model="filter.op" class="link-filter-op" @change="normalizeLinkFilterOperator(filter)"><option value="between">区间</option><option value="gte">≥</option><option value="lte">≤</option></select>
+                  <select v-model="filter.op" class="link-filter-op" @change="normalizeLinkFilterOperator(filter)"><option v-if="linkFilterType(filter) === 'text'" value="contains">包含</option><option value="eq">=</option><option v-if="linkFilterType(filter) !== 'text'" value="between">区间</option><option v-if="linkFilterType(filter) !== 'text'" value="gte">≥</option><option v-if="linkFilterType(filter) !== 'text'" value="lte">≤</option></select>
                   <select v-if="filter.field === '品牌'" v-model="filter.v1" class="link-filter-value link-brand-value" @change="applyLinkFilters"><option value="">选择品牌</option><option v-for="brand in brandOptions" :key="brand" :value="brand">{{ brand }}</option></select>
                   <input v-else v-model="filter.v1" :type="linkFilterInputType(filter)" class="link-filter-value" :placeholder="linkFilterPlaceholder(filter)" @keyup.enter="applyLinkFilters" />
                   <input v-if="linkFilterUsesSecondValue(filter)" v-model="filter.v2" :type="linkFilterInputType(filter)" class="link-filter-value" placeholder="上限" @keyup.enter="applyLinkFilters" />
@@ -472,8 +480,9 @@
                           </div>
                           <div v-if="row.filterConfig.filters.length" class="standard-filter-rows">
                             <div v-for="(filter, index) in row.filterConfig.filters" :key="filter.id" class="standard-filter-row">
-                              <select v-model="filter.field" class="link-filter-field" @change="onStandardFilterFieldChange(row, filter); queryStandardRow(row)"><option value="">— 选择字段 —</option><option v-for="field in linkFilterFields" :key="field.key" :value="field.key">{{ field.label }}</option></select>
-                              <select v-if="standardFilterType(row, filter) !== 'text'" v-model="filter.op" class="link-filter-op" @change="normalizeStandardFilterOperator(row, filter); queryStandardRow(row)"><option value="between">区间</option><option value="gte">≥</option><option value="lte">≤</option></select>
+                              <input v-model="filter.fieldSearch" class="standard-filter-field-search" placeholder="搜索字段" aria-label="搜索字段" />
+                              <select v-model="filter.field" class="link-filter-field" aria-label="选择筛选字段" @change="onStandardFilterFieldChange(row, filter); queryStandardRow(row)"><option value="">— 选择字段 —</option><option v-if="filter.fieldSearch && !standardFilterFieldOptions(filter).length" value="" disabled>没有匹配字段</option><option v-for="field in standardFilterFieldOptions(filter)" :key="field.key" :value="field.key">{{ field.label }}</option></select>
+                              <select v-model="filter.op" class="link-filter-op" @change="normalizeStandardFilterOperator(row, filter); queryStandardRow(row)"><option v-if="standardFilterType(row, filter) === 'text'" value="contains">包含</option><option value="eq">=</option><option v-if="standardFilterType(row, filter) !== 'text'" value="between">区间</option><option v-if="standardFilterType(row, filter) !== 'text'" value="gte">≥</option><option v-if="standardFilterType(row, filter) !== 'text'" value="lte">≤</option></select>
                               <select v-if="filter.field === '品牌'" v-model="filter.v1" class="link-filter-value standard-brand-value" @change="queryStandardRow(row)"><option value="">选择品牌</option><option v-for="brand in brandOptions" :key="brand" :value="brand">{{ brand }}</option></select>
                               <input v-else v-model="filter.v1" :type="standardFilterInputType(row, filter)" class="link-filter-value" :placeholder="standardFilterPlaceholder(row, filter)" @change="queryStandardRow(row)" @keyup.enter="queryStandardRow(row)" />
                               <input v-if="standardFilterUsesSecondValue(row, filter)" v-model="filter.v2" :type="standardFilterInputType(row, filter)" class="link-filter-value" placeholder="上限" @change="queryStandardRow(row)" @keyup.enter="queryStandardRow(row)" />
@@ -502,7 +511,7 @@
         <div class="promotion-drawer-head-copy">
           <span class="promotion-drawer-kicker">DATA OVERVIEW</span>
           <h2 id="promotion-drawer-title">{{ promotionDrawerMode === 'row' ? (promotionDrawerRow?.title || promotionDrawerRow?.linkId || '链接数据总览') : promotionSelectedKpiCard.label }}</h2>
-          <p v-if="promotionDrawerMode === 'row'">链接 ID：{{ promotionDrawerRow?.linkId }} · 点击字段卡片查看当前周期的每日变化</p><p v-else>当前指标的对比值、趋势与每日汇总明细</p>
+          <p v-if="promotionDrawerMode === 'row'">链接 ID：{{ promotionDrawerRow?.linkId }} · 推广字段按日期 + 小时展示，利润字段按数据日期展示</p><p v-else>当前指标的对比值、趋势与每日汇总明细</p>
         </div>
         <div class="promotion-drawer-actions">
           <strong>{{ promotionSelectedKpiCard.value }}</strong>
@@ -510,7 +519,7 @@
         </div>
       </header>
       <div class="promotion-drawer-datebar">
-        <div><span>数据范围 {{ promotionRangeHint }}</span><span>对比时间 {{ promotionDrawerComparison?.previousDate || '—' }}</span></div>
+        <div><span>数据范围 {{ promotionRangeHint }}</span><span>对比周期 {{ promotionDrawerComparison?.previousDate || '—' }}</span></div>
         <span>数据日期</span>
       </div>
       <div class="promotion-drawer-tabs" role="tablist" aria-label="指标详情视图">
@@ -519,27 +528,37 @@
       </div>
       <div class="promotion-drawer-body">
         <div class="promotion-drawer-kpi-grid">
-          <button v-for="card in activePromotionDrawerCards" :key="card.key" type="button" class="promotion-drawer-kpi" :class="{ active: card.key === promotionSelectedKpi }" @click="openPromotionTrend(card.key)">
+          <button v-for="card in orderedPromotionCards(activePromotionDrawerCards)" :key="card.key" type="button" class="promotion-drawer-kpi" :class="{ active: card.key === promotionSelectedKpi, 'is-dragging': promotionCardDragKey === card.key }" :title="`拖动调整${card.label}卡片顺序`" @click="handlePromotionCardClick($event, card.key)" @pointerdown="startPromotionCardPointerDrag($event, card.key)" @pointerenter="handlePromotionCardPointerEnter(card.key)" @pointermove="handlePromotionCardPointerEnter(card.key)" @mouseenter="handlePromotionCardPointerEnter(card.key)" @pointerup="endPromotionCardPointerDrag" @pointercancel="endPromotionCardPointerDrag">
             <span>{{ card.label }}</span>
             <strong>{{ card.value }}</strong>
-            <small>对比值 {{ card.previousValue }}</small>
+            <small :class="card.previousTone">对比值 {{ card.previousValue }}</small>
           </button>
         </div>
         <template v-if="promotionDrawerTab === 'trend'">
-          <div class="promotion-drawer-chart-head"><div><strong>{{ promotionSelectedKpiCard.label }}走势</strong><span>每日数据 · {{ promotionRangeHint }}</span></div><b>{{ promotionSelectedKpiCard.value }}</b></div>
-          <div v-if="promotionDrawerHourlyRows.length" class="promotion-hourly-chart">
-            <svg viewBox="0 0 920 270" role="img" :aria-label="`${promotionSelectedKpiCard.label}分小时趋势图`" preserveAspectRatio="none">
-              <line v-for="line in promotionTrendGridLines" :key="line.y" x1="0" :y1="line.y + 28" x2="920" :y2="line.y + 28" class="promotion-trend-grid-line" />
-              <polyline :points="promotionDrawerHourlyPoints" class="promotion-trend-line" />
-              <circle v-for="point in promotionDrawerHourlyPointsList" :key="point.key" :cx="point.x" :cy="point.y" r="3.5" class="promotion-trend-point"><title>{{ point.label || point.hourLabel }}：{{ point.display }}</title></circle>
-            </svg>
-              <div class="promotion-trend-axis"><span>{{ promotionDrawerHourlyRows[0].hourLabel }}</span><span>{{ promotionDrawerHourlyRows[Math.min(12, promotionDrawerHourlyRows.length - 1)].hourLabel }}</span><span>{{ promotionDrawerHourlyRows.at(-1).hourLabel }}</span></div>
+           <div class="promotion-drawer-chart-head"><div><strong>{{ promotionSelectedKpiCard.label }}走势</strong><span>{{ promotionDrawerGranularityHint }} · {{ promotionRangeHint }}</span><small v-if="promotionDrawerHourlyLoading" class="promotion-drawer-hourly-status">正在读取推广小时数据…</small><small v-else-if="promotionDrawerHourlyError" class="promotion-drawer-hourly-status error">{{ promotionDrawerHourlyError }}</small></div><b>{{ promotionSelectedKpiCard.value }}</b></div>
+           <div v-if="promotionDrawerHourlyRows.length" class="promotion-hourly-chart">
+             <svg viewBox="0 0 920 270" role="img" :aria-label="`${promotionSelectedKpiCard.label}当前周期与对比周期趋势图`" preserveAspectRatio="none" @pointermove="handlePromotionTrendPointerMove" @mouseleave="hidePromotionTrendTooltip">
+               <line v-for="line in promotionTrendGridLines" :key="line.y" x1="0" :y1="line.y + 28" x2="920" :y2="line.y + 28" class="promotion-trend-grid-line" />
+               <line v-if="promotionHoveredTrendPoint" :x1="promotionHoveredTrendPoint.x" y1="28" :x2="promotionHoveredTrendPoint.x" y2="238" class="promotion-trend-hover-guide" />
+               <polyline :points="promotionDrawerHourlyPoints" class="promotion-trend-line" />
+               <polyline v-if="promotionDrawerPreviousHourlyPoints" :points="promotionDrawerPreviousHourlyPoints" class="promotion-trend-compare-line" />
+               <circle v-for="(point, index) in promotionDrawerHourlyPointsList" :key="point.key" :cx="point.x" :cy="point.y" r="4" class="promotion-trend-point" tabindex="0" @mouseenter="showPromotionTrendTooltip(point, 'current', index)" @focus="showPromotionTrendTooltip(point, 'current', index)" @blur="hidePromotionTrendTooltip"><title>{{ point.tooltip }}</title></circle>
+               <circle v-for="(point, index) in promotionDrawerPreviousHourlyPointsList" :key="point.key" :cx="point.x" :cy="point.y" r="4" class="promotion-trend-compare-point" tabindex="0" @mouseenter="showPromotionTrendTooltip(point, 'comparison', index)" @focus="showPromotionTrendTooltip(point, 'comparison', index)" @blur="hidePromotionTrendTooltip"><title>{{ point.tooltip }}</title></circle>
+             </svg>
+             <div v-if="promotionHoveredTrendPoint" class="promotion-trend-tooltip" :style="promotionTrendTooltipStyle" role="status" aria-live="polite">
+               <strong>{{ promotionHoveredTrendPoint.seriesLabel }}</strong>
+               <div><span>数据日期</span><b>{{ promotionHoveredTrendPoint.date }}</b></div>
+               <div><span>{{ promotionSelectedKpiCard.label }}</span><b>{{ promotionHoveredTrendPoint.display }}</b></div>
+               <div v-if="promotionHoveredTrendPoint.compareDate" class="promotion-trend-tooltip-compare"><span>{{ promotionHoveredTrendPoint.compareSeriesLabel }} {{ promotionHoveredTrendPoint.compareDate }}</span><b>{{ promotionHoveredTrendPoint.compareDisplay }}</b></div>
+             </div>
+               <div class="promotion-trend-legend"><span class="promotion-trend-legend-current"><i></i>当前周期 {{ promotionRangeHint }}</span><span class="promotion-trend-legend-compare"><i></i>对比周期 {{ promotionComparisonRange.label || '—' }}</span></div>
+               <div class="promotion-trend-axis"><span>{{ promotionDrawerHourlyRows[0].hourLabel }}</span><span>{{ promotionDrawerHourlyRows[Math.min(12, promotionDrawerHourlyRows.length - 1)].hourLabel }}</span><span>{{ promotionDrawerHourlyRows.at(-1).hourLabel }}</span></div>
           </div>
           <div v-else class="promotion-trend-empty">当前筛选范围暂无可展示的趋势数据</div>
         </template>
         <template v-else>
           <div class="promotion-drawer-table-scroll">
-            <table class="promotion-drawer-table"><thead><tr><th>数据日期</th><th>{{ promotionSelectedKpiCard.label }}</th><th>环比日期</th><th>数据范围</th></tr></thead><tbody><tr v-for="item in promotionDrawerHourlyRows" :key="item.hour"><td>{{ item.hourLabel }}</td><td>{{ item.display }}</td><td :class="item.changeTone">{{ item.change }}</td><td>{{ promotionRangeHint }}</td></tr></tbody></table>
+            <table class="promotion-drawer-table"><thead><tr><th>{{ promotionDrawerTimeColumnLabel }}</th><th>{{ promotionSelectedKpiCard.label }}</th><th>变化幅度</th><th>{{ promotionDrawerComparisonColumnLabel }}</th></tr></thead><tbody><tr v-for="(item, index) in promotionDrawerHourlyRows" :key="item.key"><td>{{ item.hourLabel }}</td><td>{{ item.display }}</td><td :class="item.changeTone">{{ item.change }}</td><td>{{ promotionDrawerComparisonDate(item, index) }}</td></tr></tbody></table>
           </div>
         </template>
       </div>
@@ -562,11 +581,35 @@
         <div class="modal-actions"><button type="button" class="button secondary" :disabled="adjustingPromotion" @click="closePromotionAdjust">取消</button><button type="button" class="button primary" :disabled="adjustingPromotion" @click="submitPromotionAdjust">{{ adjustingPromotion ? '提交中…' : '确定提交' }}</button></div>
       </section>
     </div>
+    <div v-if="delistConfirmOpen" class="modal-backdrop" @click.self="closeDelistConfirm">
+      <section class="promotion-adjust-modal panel delist-confirm-modal" role="dialog" aria-modal="true" aria-labelledby="delist-confirm-title">
+        <div class="modal-header">
+          <div><h2 id="delist-confirm-title">📦 确认产品下架</h2><p>以下 {{ delistOperationIds.length }} 条链接将提交产品下架任务，请确认。</p></div>
+          <button type="button" class="modal-close" aria-label="关闭下架确认弹窗" :disabled="delisting" @click="closeDelistConfirm">×</button>
+        </div>
+        <div class="delist-confirm-warning">请核对店铺名称和链接 ID。确认后将提交下架任务，请在拼多多推广后台确认最终执行结果。</div>
+        <div class="delist-selection-list" role="list" aria-label="待下架链接">
+          <div v-for="item in selectedDelistLinkRows" :key="item.linkId" class="delist-selection-item" role="listitem">
+            <div><span>店铺名称</span><strong>{{ item.storeName || '未识别店铺' }}</strong></div>
+            <div><span>链接 ID</span><code>{{ item.linkId }}</code></div>
+          </div>
+        </div>
+        <p v-if="delistMessage" class="adjust-message">{{ delistMessage }}</p>
+        <div class="modal-actions"><button type="button" class="button secondary" :disabled="delisting" @click="closeDelistConfirm">取消</button><button type="button" class="button danger" :disabled="delisting" @click="submitSelectedLinks">{{ delisting ? '提交中…' : '确认下架' }}</button></div>
+      </section>
+    </div>
     <div v-if="promotionHelpOpen || promotionReportOpen" class="modal-backdrop" @click.self="promotionHelpOpen = promotionReportOpen = false">
       <section class="promotion-info-modal panel" role="dialog" aria-modal="true">
         <div class="modal-header"><div><h2>{{ promotionHelpOpen ? '商品推广说明' : '推广数据口径' }}</h2><p>{{ promotionHelpOpen ? '商品推广页的前端交互入口已按推广平台结构预留。' : '用于确认日表与未来分小时推广表的字段边界。' }}</p></div><button type="button" class="modal-close" aria-label="关闭" @click="promotionHelpOpen = promotionReportOpen = false">×</button></div>
         <div v-if="promotionHelpOpen" class="promotion-info-list"><p>• 时间范围使用“数据日期”，支持今日、昨日、近 7 日、近 30 日和近 90 日。</p><p>• 搜索支持推广名称、商品名称、商品 ID，多个 ID 可用逗号或空格分隔。</p><p>• 商品行的“详情 / 数据 / 更多”分别对应基础信息、小时数据面板和运营动作入口。</p></div>
         <div v-else class="promotion-info-list"><p>• 当前商品推广列表复用看板已有商品/链接数据生成前端演示行。</p><p>• 未来接入推广数据表时，建议使用“数据日期 + 小时 + 商品 ID”作为明细粒度。</p><p>• 花费、交易额、投产比等字段保留独立口径，避免与利润表聚合结果混用。</p></div>
+      </section>
+    </div>
+    <div v-if="promotionImagePreviewUrl" class="promotion-image-preview-backdrop" @click.self="closePromotionImagePreview">
+      <section class="promotion-image-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="promotion-image-preview-title">
+        <h2 id="promotion-image-preview-title" class="sr-only">链接主图预览</h2>
+        <button type="button" class="promotion-image-preview-close" aria-label="关闭图片预览" @click="closePromotionImagePreview">×</button>
+        <div class="promotion-image-preview-stage"><img :src="promotionImagePreviewUrl" alt="链接主图大图预览" /></div>
       </section>
     </div>
     <div v-if="promotionNoticeMessage" class="promotion-toast" role="status">{{ promotionNoticeMessage }}</div>
@@ -624,6 +667,10 @@ const targetMessage = ref('');
 const selectedLinks = ref([]);
 const adjustModalOpen = ref(false);
 const adjustingPromotion = ref(false);
+const delistConfirmOpen = ref(false);
+const delisting = ref(false);
+const delistMessage = ref('');
+const delistTargetIds = ref([]);
  const promotionAdjustPresets = Object.freeze([
    { key: 'maintenance-005', label: '日常维护', display: '+0.05', value: 0.05 },
    { key: 'serious-loss-01', label: '亏损严重', display: '+0.1', value: 0.1 },
@@ -645,6 +692,14 @@ const defaultPromotionVisibleColumns = Object.freeze([...promotionVisibleColumns
 const promotionColumnDraft = ref([...promotionVisibleColumns.value]);
 const promotionColumnSearch = ref('');
 const promotionDraggedColumn = ref('');
+const promotionDimension = ref('link');
+const promotionDimensions = Object.freeze([
+  { key: 'brand', label: '品牌' },
+  { key: 'person', label: '负责人' },
+  { key: 'store', label: '店铺' },
+  { key: 'product', label: '商品' },
+  { key: 'link', label: '链接' },
+]);
 const promotionSort = reactive({ key: 'promotionRevenue', order: 'desc' });
 const selectedPromotionIds = ref([]);
 const selectedOperationIds = computed(() => selectedPromotionIds.value.length ? selectedPromotionIds.value : selectedLinks.value);
@@ -652,6 +707,7 @@ const promotionExpandedKey = ref('');
 const promotionExpandedMode = ref('detail');
 const promotionHelpOpen = ref(false);
 const promotionReportOpen = ref(false);
+const promotionImagePreviewUrl = ref('');
 const promotionNoticeMessage = ref('');
 const promotionMoreFiltersOpen = ref(false);
 const promotionDataSummaryOpen = ref(false);
@@ -660,22 +716,40 @@ const promotionHourDate = ref('all');
 const promotionHourlySourceRows = ref([]);
 const promotionHourlyLoading = ref(false);
 const promotionHourlyError = ref('');
+// 抽屉趋势单独维护小时源数据，避免与表格内“数据”展开区域互相覆盖。
+const promotionDrawerHourlySourceRows = ref([]);
+const promotionDrawerPreviousHourlySourceRows = ref([]);
+const promotionDrawerHourlyLoading = ref(false);
+const promotionDrawerHourlyError = ref('');
+const promotionDrawerHourlyLoaded = ref(false);
+const promotionDrawerHourlyRequestKey = ref('');
 const promotionNoticeTimer = ref(null);
 const promotionSelectedKpi = ref('spend');
 const promotionTrendOpen = ref(false);
 const promotionDrawerTab = ref('trend');
 const promotionDrawerMode = ref('kpi');
 const promotionDrawerRow = ref(null);
+const promotionComparisonRows = ref([]);
+const promotionComparisonLoading = ref(false);
+const promotionComparisonError = ref('');
+const promotionComparisonRequestKey = ref('');
 const promotionKpiTrack = ref(null);
+const promotionCardOrderStorageKey = 'link-monitor-promotion-card-order';
+const promotionCardOrder = ref(loadPromotionCardOrder());
+const promotionCardDragKey = ref('');
+const promotionCardPointerMoved = ref(false);
+const promotionCardSuppressClick = ref(false);
 const linkQuery = reactive({ search: '', store_person: '', profit_rate_lte: '', size: 20 });
 const linkSummaryQuery = reactive({ search: '', size: 20 });
 const linkSummarySort = reactive({ key: 'revenue', order: 'desc' });
+const activeLinkPresetId = ref('');
+const activeLinkPresetFilters = ref([]);
 const expandedLinkSummaryId = ref('');
 const linkSummaryDailyRows = ref([]);
 const linkSummaryDailyLoading = ref(false);
 const linkSummaryDailyError = ref('');
 const brandOptions = Object.freeze(['浪奇', '威王', '舒蕾', '白牌']);
-const globalFilters = reactive({ link_ids: '', product_code: '', product_name: '', brand: '', store_name: '', store_person: '' });
+const globalFilters = reactive({ link_ids: '', product_code: '', product_name: '', orders: '', brand: '', store_name: '', store_person: '' });
 const linkDataDateStart = ref('');
 const linkDataDateEnd = ref('');
 const linkDataLinkIds = ref('');
@@ -1180,6 +1254,14 @@ const linkColumnOptions = computed(() => {
   });
 });
 const linkFilterFields = computed(() => linkColumnOptions.value);
+const linkFilterPresets = computed(() => standardRows.value
+  .filter((row) => row.id !== undefined && row.id !== null && row.enabled && standardActiveFilters(row).length)
+  .map((row) => ({
+    id: String(row.id),
+    label: row.note?.trim() || `${row.dimensionType === 'brand' ? '品牌' : row.dimensionType === 'person' ? '负责人' : '链接'}筛选 ${row.id}`,
+    summary: standardFilterSummary(row),
+    filters: standardActiveFilters(row),
+  })));
 const linkColumns = computed(() => {
   const selected = visibleLinkColumnKeys.value === null ? linkColumnOptions.value : linkColumnOptions.value.filter((column) => visibleLinkColumnKeys.value.includes(column.key));
   return selected.map((column) => ({ ...column, tone: linkPercentFields.has(column.key) ? 'rate' : column.type === 'number' ? 'number' : '' }));
@@ -1342,9 +1424,122 @@ const promotionDraftColumns = computed(() => promotionColumnDraft.value.map((key
 const visiblePromotionColumns = computed(() => promotionVisibleColumns.value
   .map((key) => promotionColumns.find((column) => column.key === key))
   .filter(Boolean));
+const promotionDimensionLabel = computed(() => promotionDimensions.find((item) => item.key === promotionDimension.value)?.label || '链接');
+const promotionAggregateNumberKeys = Object.freeze([...new Set([
+  ...promotionColumns.filter((column) => column.tone === 'number').map((column) => column.key),
+  'techServiceFee', 'estimatedAfterSale', 'profitPromotionFee', 'freightInsurance', 'tax', 'profitOrders',
+])]);
+function promotionDimensionValue(row) {
+  if (promotionDimension.value === 'brand') return row.brand || '未分类';
+  if (promotionDimension.value === 'person') return row.person || '未分配';
+  if (promotionDimension.value === 'store') return row.storeName || '未命名店铺';
+  if (promotionDimension.value === 'product') return row.productCode || row.title || '未命名商品';
+  return row.linkId || '未命名链接';
+}
+function promotionAggregateDailyRows(rows) {
+  const dailyMap = new Map();
+  for (const source of rows) {
+    for (const item of source.dailyRows || []) {
+      const date = String(item.dataDate || '').slice(0, 10);
+      if (!date) continue;
+      const current = dailyMap.get(date) || { linkId: '', dataDate: date, person: '', _persons: new Set() };
+      if (item.person) current._persons.add(item.person);
+      for (const key of promotionAggregateNumberKeys) current[key] = Number(current[key] || 0) + Number(item[key] || 0);
+      dailyMap.set(date, current);
+    }
+  }
+  return [...dailyMap.values()].sort((left, right) => left.dataDate.localeCompare(right.dataDate)).map((item) => {
+    const daily = { ...item, person: [...item._persons].sort().join('、') };
+    delete daily._persons;
+    const revenue = Number(daily.orderAmount || 0);
+    daily.costPct = ratio(daily.goodsCost, revenue);
+    daily.shippingPct = ratio(daily.shippingCost, revenue);
+    daily.goodsShippingPct = ratio(daily.goodsShippingTotal, revenue);
+    daily.grossMargin = ratio(daily.grossProfit, revenue);
+    daily.profitPromotionPct = ratio(daily.profitPromotionFee, revenue);
+    daily.profitRate = ratio(daily.platformProfit, revenue);
+    daily.promotionRoi = daily.promotionSpend ? daily.promotionRevenue / daily.promotionSpend : 0;
+    daily.promotionNetRoi = daily.promotionSpend ? daily.promotionNetRevenue / daily.promotionSpend : 0;
+    daily.promotionAvgNetOrderSpend = daily.promotionNetOrders ? daily.promotionSpend / daily.promotionNetOrders : 0;
+    daily.promotionNetRevenueRatio = ratio(daily.promotionNetRevenue, daily.promotionRevenue);
+    daily.promotionNetOrdersRatio = ratio(daily.promotionNetOrders, daily.promotionOrders);
+    daily.promotionAvgNetOrderRevenue = daily.promotionNetOrders ? daily.promotionNetRevenue / daily.promotionNetOrders : 0;
+    daily.settledRoi = daily.promotionSpend ? daily.settledRevenue / daily.promotionSpend : 0;
+    daily.settledAvgOrderSpend = daily.settledOrders ? daily.promotionSpend / daily.settledOrders : 0;
+    daily.revenueSettlementRate = ratio(daily.settledRevenue, daily.promotionRevenue);
+    daily.orderSettlementRate = ratio(daily.settledOrders, daily.promotionOrders);
+    daily.settledAvgOrderRevenue = daily.settledOrders ? daily.settledRevenue / daily.settledOrders : 0;
+    daily.promotionAvgOrderSpend = daily.promotionOrders ? daily.promotionSpend / daily.promotionOrders : 0;
+    daily.promotionAvgOrderRevenue = daily.promotionOrders ? daily.promotionRevenue / daily.promotionOrders : 0;
+    return daily;
+  });
+}
+function promotionAggregateRow(rows, dimensionValue) {
+  const first = rows[0] || {};
+  const dailyRows = promotionAggregateDailyRows(rows);
+  const row = {
+    ...first,
+    linkId: `${promotionDimension.value}:${dimensionValue}`,
+    dimensionValue,
+    sourceLinkIds: rows.map((item) => item.linkId).filter(Boolean),
+    title: promotionDimension.value === 'link' || promotionDimension.value === 'product' ? first.title : dimensionValue,
+    storeName: promotionDimension.value === 'store' ? dimensionValue : (promotionDimension.value === 'brand' ? dimensionValue : first.storeName),
+    productCode: promotionDimension.value === 'product' ? dimensionValue : '—',
+    person: promotionDimension.value === 'person' ? dimensionValue : (rows.length === 1 ? first.person : '多个负责人'),
+    brand: promotionDimension.value === 'brand' ? dimensionValue : first.brand,
+    imageUrl: first.imageUrl || '',
+    createdAt: promotionDimension.value === 'link' ? first.createdAt : '',
+    dailyRows,
+    dataDays: dailyRows.length,
+    profitDataDays: rows.reduce((sum, item) => sum + Number(item.profitDataDays || 0), 0),
+    promotionDataDays: rows.reduce((sum, item) => sum + Number(item.promotionDataDays || 0), 0),
+  };
+  for (const key of promotionAggregateNumberKeys) row[key] = rows.reduce((sum, item) => sum + Number(item[key] || 0), 0);
+  const revenue = Number(row.orderAmount || 0);
+  row.costPct = ratio(row.goodsCost, revenue);
+  row.shippingPct = ratio(row.shippingCost, revenue);
+  row.goodsShippingPct = ratio(row.goodsShippingTotal, revenue);
+  row.grossMargin = ratio(row.grossProfit, revenue);
+  row.profitPromotionPct = ratio(row.profitPromotionFee, revenue);
+  row.profitRate = ratio(row.platformProfit, revenue);
+  row.promotionRoi = row.promotionSpend ? row.promotionRevenue / row.promotionSpend : 0;
+  row.promotionNetRoi = row.promotionSpend ? row.promotionNetRevenue / row.promotionSpend : 0;
+  row.promotionAvgNetOrderSpend = row.promotionNetOrders ? row.promotionSpend / row.promotionNetOrders : 0;
+  row.promotionNetRevenueRatio = ratio(row.promotionNetRevenue, row.promotionRevenue);
+  row.promotionNetOrdersRatio = ratio(row.promotionNetOrders, row.promotionOrders);
+  row.promotionAvgNetOrderRevenue = row.promotionNetOrders ? row.promotionNetRevenue / row.promotionNetOrders : 0;
+  row.settledRoi = row.promotionSpend ? row.settledRevenue / row.promotionSpend : 0;
+  row.settledAvgOrderSpend = row.settledOrders ? row.promotionSpend / row.settledOrders : 0;
+  row.revenueSettlementRate = ratio(row.settledRevenue, row.promotionRevenue);
+  row.orderSettlementRate = ratio(row.settledOrders, row.promotionOrders);
+  row.settledAvgOrderRevenue = row.settledOrders ? row.settledRevenue / row.settledOrders : 0;
+  row.promotionAvgOrderSpend = row.promotionOrders ? row.promotionSpend / row.promotionOrders : 0;
+  row.promotionAvgOrderRevenue = row.promotionOrders ? row.promotionRevenue / row.promotionOrders : 0;
+  row.spend = row.promotionSpend || 0;
+  row.revenue = row.promotionRevenue || 0;
+  row.netRevenue = row.promotionNetRevenue || 0;
+  row.orders = row.promotionNetOrders || 0;
+  row.roi = row.promotionRoi || 0;
+  row.netRoi = row.promotionNetRoi || 0;
+  row.status = row.promotionDataDays ? '有推广数据' : '无推广数据';
+  row.firstDate = dailyRows[0]?.dataDate || '';
+  row.lastDate = dailyRows.at(-1)?.dataDate || '';
+  return row;
+}
+const promotionDimensionRows = computed(() => {
+  if (promotionDimension.value === 'link') return promotionRows.value;
+  const groups = new Map();
+  for (const row of promotionRows.value) {
+    const value = promotionDimensionValue(row);
+    const current = groups.get(value) || [];
+    current.push(row);
+    groups.set(value, current);
+  }
+  return [...groups.entries()].map(([value, rows]) => promotionAggregateRow(rows, value));
+});
 const sortedPromotionRows = computed(() => {
   const column = promotionColumns.find((item) => item.key === promotionSort.key);
-  if (!column) return promotionRows.value;
+  if (!column) return promotionDimensionRows.value;
   const direction = promotionSort.order === 'asc' ? 1 : -1;
   const valueOf = (row) => {
     const value = row[column.key];
@@ -1356,7 +1551,7 @@ const sortedPromotionRows = computed(() => {
     }
     return String(value ?? '').toLocaleLowerCase('zh-CN');
   };
-  return [...promotionRows.value].sort((left, right) => {
+  return [...promotionDimensionRows.value].sort((left, right) => {
     const a = valueOf(left);
     const b = valueOf(right);
     if (a === b) return String(left.linkId || '').localeCompare(String(right.linkId || ''));
@@ -1502,16 +1697,25 @@ function promotionRowMetricValue(metric, item = {}) {
     promotionOrders: item.promotionOrders, directRevenue: item.directRevenue ?? source.directRevenue, indirectRevenue: item.indirectRevenue ?? source.indirectRevenue,
     impressions: item.impressions ?? source.impressions, clicks: item.clicks ?? source.clicks, sitePromotionRatio: item.sitePromotionRatio,
     dataDays: item.dataDays ?? 1,
-  }[metric] ?? 0;
+  }[metric] ?? item[metric] ?? 0;
 }
 const promotionRowDrawerCards = computed(() => {
   const row = promotionDrawerRow.value;
   if (!row) return [];
-  return promotionRowDrawerFields.map((field) => ({
-    key: field.key, label: field.label, value: promotionRowMetricDisplay(row[field.key], field.tone),
-    previousValue: ['storeName', 'linkId', 'productCode', 'createdAt', 'person'].includes(field.key) ? '—' : '周期汇总',
-    note: field.key === 'linkId' ? '点击字段卡片查看每日变化' : '当前筛选周期',
-  }));
+  const previous = promotionDrawerComparison.value.previousRow;
+  return promotionRowDrawerFields.map((field) => {
+    const currentValue = promotionRowMetricValue(field.key, row);
+    const previousValue = previous ? promotionRowMetricValue(field.key, previous) : null;
+    const isText = ['storeName', 'linkId', 'productCode', 'createdAt', 'person'].includes(field.key);
+    return {
+      key: field.key,
+      label: field.label,
+      value: promotionRowMetricDisplay(currentValue, field.tone),
+      previousValue: promotionComparisonLoading.value ? '加载中…' : isText ? '—' : formatPeriodChange(currentValue, previousValue),
+      previousTone: isText ? '' : periodChangeTone(currentValue, previousValue),
+      note: field.key === 'linkId' ? '点击字段卡片查看每日变化' : '当前筛选周期',
+    };
+  });
 });
 const promotionSelectedKpiCard = computed(() => {
   const cards = promotionDrawerMode.value === 'row' ? promotionRowDrawerCards.value : promotionKpiCards.value;
@@ -1551,36 +1755,301 @@ function formatPromotionMetricDisplay(metric, value) {
   if (['orders', 'impressions', 'clicks', 'favorites', 'follows', 'inquiries'].includes(metric)) return Math.round(amount).toLocaleString();
   return formatPromotionMoney(amount);
 }
-const promotionMetricTotals = computed(() => {
-  const rows = promotionRows.value;
+function promotionMetricTotalsFromRows(rows, summaryOverride = null) {
+  const linkIds = new Set(rows.map((row) => String(row.linkId || '')).filter((id) => id && !id.includes(':')));
+  const total = (key) => rows.reduce((sum, row) => sum + Number(row[key] || 0), 0);
   return promotionMetricSource({
-    spend: rows.reduce((sum, row) => sum + Number(row.promotionSpend || 0), 0),
-    revenue: rows.reduce((sum, row) => sum + Number(row.promotionRevenue || 0), 0),
-    orders: rows.reduce((sum, row) => sum + Number(row.promotionNetOrders || 0), 0),
-    clicks: rows.reduce((sum, row) => sum + Number(row.clicks || 0), 0),
-    impressions: rows.reduce((sum, row) => sum + Number(row.impressions || 0), 0),
-    netRevenue: rows.reduce((sum, row) => sum + Number(row.promotionNetRevenue || 0), 0),
-    directRevenue: rows.reduce((sum, row) => sum + Number(row.directRevenue || 0), 0),
-    indirectRevenue: rows.reduce((sum, row) => sum + Number(row.indirectRevenue || 0), 0),
-    favorites: rows.reduce((sum, row) => sum + Number(row.favorites || 0), 0),
-    follows: rows.reduce((sum, row) => sum + Number(row.follows || 0), 0),
-    inquiries: rows.reduce((sum, row) => sum + Number(row.inquiries || 0), 0),
+    spend: total('promotionSpend'), revenue: total('promotionRevenue'), orders: total('promotionNetOrders'),
+    clicks: total('clicks'), impressions: total('impressions'), netRevenue: total('promotionNetRevenue'),
+    directRevenue: total('directRevenue'), indirectRevenue: total('indirectRevenue'), favorites: total('favorites'),
+    follows: total('follows'), inquiries: total('inquiries'),
+    summaryLinks: summaryOverride?.links ?? linkIds.size,
+    summaryRevenue: summaryOverride?.revenue ?? total('orderAmount'),
+    summaryCost: summaryOverride?.cost ?? total('goodsCost'),
+    summaryGrossProfit: summaryOverride?.grossProfit ?? total('grossProfit'),
+    summaryPromotion: summaryOverride?.promotion ?? total('profitPromotionFee'),
+    summaryPlatformProfit: summaryOverride?.platformProfit ?? total('platformProfit'),
   });
+}
+const promotionMetricTotals = computed(() => promotionMetricTotalsFromRows(promotionRows.value, linkSummaryTotals.value));
+const promotionComparisonMetricTotals = computed(() => promotionMetricTotalsFromRows(promotionComparisonRows.value));
+function shiftPromotionDate(date, days) {
+  if (!date) return '';
+  const value = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(value.getTime())) return '';
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+const promotionComparisonRange = computed(() => {
+  const start = promotionFilters.start;
+  const end = promotionFilters.end;
+  if (!start || !end) return { start: '', end: '', days: 0, label: '' };
+  const startMs = Date.parse(`${start}T00:00:00Z`);
+  const endMs = Date.parse(`${end}T00:00:00Z`);
+  const days = Number.isFinite(startMs) && Number.isFinite(endMs) ? Math.max(1, Math.round((endMs - startMs) / 86400000) + 1) : 0;
+  const previousEnd = shiftPromotionDate(start, -1);
+  const previousStart = shiftPromotionDate(start, -days);
+  return { start: previousStart, end: previousEnd, days, label: previousStart && previousEnd ? `${previousStart} 至 ${previousEnd}` : '' };
 });
-const promotionDrawerComparison = computed(() => ({ previousDate: '', previous: {} }));
-const promotionDrawerCards = computed(() => promotionKpiCards.value.map((card) => ({ ...card, previousValue: '—' })));
+const promotionComparisonDimensionRows = computed(() => {
+  if (promotionDimension.value === 'link') return promotionComparisonRows.value;
+  const groups = new Map();
+  for (const row of promotionComparisonRows.value) {
+    const value = promotionDimensionValue(row);
+    const current = groups.get(value) || [];
+    current.push(row);
+    groups.set(value, current);
+  }
+  return [...groups.entries()].map(([value, rows]) => promotionAggregateRow(rows, value));
+});
+const promotionDrawerComparison = computed(() => {
+  const currentRow = promotionDrawerRow.value;
+  const previousRow = currentRow ? promotionComparisonDimensionRows.value.find((row) => String(row.linkId) === String(currentRow.linkId)) || null : null;
+  const hasPreviousData = promotionComparisonRows.value.length > 0;
+  return { previousDate: promotionComparisonRange.value.label, previous: hasPreviousData ? promotionComparisonMetricTotals.value : null, previousRow };
+});
+function formatPeriodChange(current, previous) {
+  if (current === null || current === undefined || previous === null || previous === undefined || previous === '') return '—';
+  const currentNumber = Number(current);
+  const previousNumber = Number(previous);
+  if (!Number.isFinite(currentNumber) || !Number.isFinite(previousNumber)) return '—';
+  if (previousNumber === 0) return currentNumber === 0 ? '0.00%' : '新增';
+  const change = (currentNumber - previousNumber) / Math.abs(previousNumber) * 100;
+  return `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+}
+function periodChangeTone(current, previous) {
+  if (current === null || current === undefined || previous === null || previous === undefined || previous === '') return '';
+  const currentNumber = Number(current);
+  const previousNumber = Number(previous);
+  if (!Number.isFinite(currentNumber) || !Number.isFinite(previousNumber) || previousNumber === 0) return '';
+  return currentNumber >= previousNumber ? 'rate-positive' : 'rate-negative';
+}
+const promotionDrawerCards = computed(() => promotionKpiCards.value.map((card) => {
+  const currentValue = promotionMetricValue(card.key, promotionMetricTotals.value);
+  const previousValue = promotionDrawerComparison.value.previous ? promotionMetricValue(card.key, promotionDrawerComparison.value.previous) : null;
+  return { ...card, previousValue: promotionComparisonLoading.value ? '加载中…' : formatPeriodChange(currentValue, previousValue), previousTone: periodChangeTone(currentValue, previousValue) };
+}));
 const activePromotionDrawerCards = computed(() => promotionDrawerMode.value === 'row' ? promotionRowDrawerCards.value : promotionDrawerCards.value);
-const promotionExpandedRow = computed(() => promotionRows.value.find((item) => item.linkId === promotionExpandedKey.value) || null);
-const promotionDrawerHourlyRows = computed(() => {
-  const dailyRows = promotionDrawerMode.value === 'row' ? (promotionDrawerRow.value?.dailyRows || []) : promotionRows.value.flatMap((row) => row.dailyRows || []);
+function loadPromotionCardOrder() {
+  if (typeof window === 'undefined') return [];
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(promotionCardOrderStorageKey) || '[]');
+    return Array.isArray(saved) ? saved.filter((key) => typeof key === 'string' && key) : [];
+  } catch {
+    return [];
+  }
+}
+function persistPromotionCardOrder() {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(promotionCardOrderStorageKey, JSON.stringify(promotionCardOrder.value));
+  } catch {
+    // 本地存储不可用时仍保留当前会话内的拖动顺序。
+  }
+}
+function ensurePromotionCardOrder(cards) {
+  const incomingKeys = cards.map((card) => card?.key).filter(Boolean);
+  const knownKeys = new Set(promotionCardOrder.value);
+  const missingKeys = incomingKeys.filter((key) => !knownKeys.has(key));
+  if (!missingKeys.length) return;
+  promotionCardOrder.value = [...promotionCardOrder.value, ...missingKeys];
+  persistPromotionCardOrder();
+}
+function orderedPromotionCards(cards) {
+  const order = new Map(promotionCardOrder.value.map((key, index) => [key, index]));
+  return [...cards].sort((left, right) => {
+    const leftIndex = order.get(left.key) ?? Number.MAX_SAFE_INTEGER;
+    const rightIndex = order.get(right.key) ?? Number.MAX_SAFE_INTEGER;
+    return leftIndex - rightIndex;
+  });
+}
+function movePromotionCardBefore(targetKey) {
+  const sourceKey = promotionCardDragKey.value;
+  if (!sourceKey || !targetKey || sourceKey === targetKey) return false;
+  const nextOrder = [...promotionCardOrder.value];
+  const sourceIndex = nextOrder.indexOf(sourceKey);
+  const targetIndex = nextOrder.indexOf(targetKey);
+  if (sourceIndex < 0 || targetIndex < 0) return false;
+  nextOrder.splice(sourceIndex, 1);
+  const nextTargetIndex = nextOrder.indexOf(targetKey);
+  if (nextTargetIndex < 0) return false;
+  nextOrder.splice(nextTargetIndex, 0, sourceKey);
+  promotionCardOrder.value = nextOrder;
+  persistPromotionCardOrder();
+  return true;
+}
+function startPromotionCardPointerDrag(event, key) {
+  if (event?.pointerType === 'mouse' && event.button !== 0) return;
+  promotionCardDragKey.value = key;
+  promotionCardPointerMoved.value = false;
+}
+function handlePromotionCardPointerEnter(targetKey) {
+  if (!promotionCardDragKey.value || promotionCardDragKey.value === targetKey) return;
+  if (movePromotionCardBefore(targetKey)) promotionCardPointerMoved.value = true;
+}
+function endPromotionCardPointerDrag() {
+  if (promotionCardPointerMoved.value) {
+    promotionCardSuppressClick.value = true;
+    window.setTimeout(() => { promotionCardSuppressClick.value = false; }, 0);
+  }
+  endPromotionCardDrag();
+}
+function handlePromotionCardClick(event, key) {
+  if (promotionCardSuppressClick.value) {
+    event.preventDefault();
+    promotionCardSuppressClick.value = false;
+    return;
+  }
+  if (promotionDrawerMode.value === 'row') openPromotionTrend(key);
+  else openPromotionKpiTrend(key);
+}
+function endPromotionCardDrag() {
+  promotionCardDragKey.value = '';
+}
+watch([promotionKpiCards, promotionRowDrawerCards], ([mainCards, drawerCards]) => {
+  ensurePromotionCardOrder([...mainCards, ...drawerCards]);
+}, { immediate: true });
+const promotionExpandedRow = computed(() => promotionDimensionRows.value.find((item) => item.linkId === promotionExpandedKey.value) || null);
+// 这些字段来自推广小时事实表；利润表字段仍然使用原来的日粒度数据。
+const promotionHourlyMetricKeys = new Set([
+  'promotionSpend', 'promotionTotalSpend', 'promotionRevenue', 'promotionRoi', 'promotionNetRoi', 'promotionNetRevenue',
+  'promotionNetOrders', 'promotionAvgNetOrderSpend', 'promotionNetRevenueRatio', 'promotionNetOrdersRatio', 'promotionAvgNetOrderRevenue',
+  'settledRevenue', 'settledRoi', 'settledOrders', 'refundExemptionRate', 'cancelExemptionRate', 'settledAvgOrderSpend',
+  'revenueSettlementRate', 'orderSettlementRate', 'settledAvgOrderRevenue', 'promotionOrders', 'promotionAvgOrderSpend',
+  'promotionAvgOrderRevenue', 'directRevenue', 'indirectRevenue', 'directOrders', 'indirectOrders', 'impressions', 'clicks',
+  'sitePromotionRatio',
+]);
+const promotionHourlyNumericFields = Object.freeze([...promotionHourlyMetricKeys]);
+function promotionHourlyNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+function promotionHourlyMetricSource(item = {}) {
+  return {
+    promotionSpend: promotionHourlyNumber(item.spend),
+    promotionTotalSpend: promotionHourlyNumber(item.totalSpend),
+    promotionRevenue: promotionHourlyNumber(item.revenue),
+    promotionRoi: promotionHourlyNumber(item.roi),
+    promotionNetRoi: promotionHourlyNumber(item.netRoi),
+    promotionNetRevenue: promotionHourlyNumber(item.netRevenue),
+    promotionNetOrders: promotionHourlyNumber(item.netOrders),
+    promotionAvgNetOrderSpend: promotionHourlyNumber(item.avgNetOrderSpend),
+    promotionNetRevenueRatio: promotionHourlyNumber(item.netRevenueRatio),
+    promotionNetOrdersRatio: promotionHourlyNumber(item.netOrdersRatio),
+    promotionAvgNetOrderRevenue: promotionHourlyNumber(item.avgNetOrderRevenue),
+    settledRevenue: promotionHourlyNumber(item.settledRevenue),
+    settledRoi: promotionHourlyNumber(item.settledRoi),
+    settledOrders: promotionHourlyNumber(item.settledOrders),
+    refundExemptionRate: promotionHourlyNumber(item.refundExemptionRate),
+    cancelExemptionRate: promotionHourlyNumber(item.cancelExemptionRate),
+    settledAvgOrderSpend: promotionHourlyNumber(item.settledAvgOrderSpend),
+    revenueSettlementRate: promotionHourlyNumber(item.revenueSettlementRate),
+    orderSettlementRate: promotionHourlyNumber(item.orderSettlementRate),
+    settledAvgOrderRevenue: promotionHourlyNumber(item.settledAvgOrderRevenue),
+    promotionOrders: promotionHourlyNumber(item.orders),
+    promotionAvgOrderSpend: promotionHourlyNumber(item.avgOrderSpend),
+    promotionAvgOrderRevenue: promotionHourlyNumber(item.avgOrderRevenue),
+    directRevenue: promotionHourlyNumber(item.directRevenue),
+    indirectRevenue: promotionHourlyNumber(item.indirectRevenue),
+    directOrders: promotionHourlyNumber(item.directOrders),
+    indirectOrders: promotionHourlyNumber(item.indirectOrders),
+    impressions: promotionHourlyNumber(item.impressions),
+    clicks: promotionHourlyNumber(item.clicks),
+    sitePromotionRatio: promotionHourlyNumber(item.sitePromotionRatio),
+  };
+}
+function promotionHourlySlotList(range) {
+  const start = String(range?.start || '').slice(0, 10);
+  const end = String(range?.end || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || start > end) return [];
+  const slots = [];
+  const cursor = new Date(`${start}T00:00:00Z`);
+  const last = new Date(`${end}T00:00:00Z`);
+  while (cursor <= last) {
+    const date = cursor.toISOString().slice(0, 10);
+    for (let hour = 0; hour < 24; hour += 1) {
+      const hourLabel = `${String(hour).padStart(2, '0')}:00`;
+      slots.push({ date, hour: hourLabel, hourLabel: `${date} ${hourLabel}`, key: `${date}-${hourLabel}` });
+    }
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return slots;
+}
+function buildPromotionHourlyDrawerRows(hourlyRows, range, fillMissing = false) {
+  const grouped = new Map();
+  for (const item of hourlyRows || []) {
+    const date = String(item.date || '').slice(0, 10);
+    const match = String(item.hour || '').match(/\d{1,2}/);
+    const hour = match ? `${String(Number(match[0])).padStart(2, '0')}:00` : '';
+    if (!date || !hour || (range.start && date < range.start) || (range.end && date > range.end)) continue;
+    const key = `${date}-${hour}`;
+    const current = grouped.get(key) || { date, hour, hourLabel: `${date} ${hour}`, key };
+    const source = promotionHourlyMetricSource(item);
+    for (const field of promotionHourlyNumericFields) current[field] = Number(current[field] || 0) + source[field];
+    grouped.set(key, current);
+  }
+  if (!grouped.size && !fillMissing) return [];
+  const slots = fillMissing ? promotionHourlySlotList(range) : [...grouped.values()].sort((a, b) => a.key.localeCompare(b.key));
+  return slots.map((slot, index, all) => {
+    const item = { ...slot, ...(grouped.get(slot.key) || {}) };
+    // 聚合后重新计算比率和单笔指标，避免把每个小时的比例直接相加。
+    const spend = Number(item.promotionSpend || 0);
+    const revenue = Number(item.promotionRevenue || 0);
+    const netRevenue = Number(item.promotionNetRevenue || 0);
+    const orders = Number(item.promotionOrders || 0);
+    const netOrders = Number(item.promotionNetOrders || 0);
+    item.promotionRoi = spend ? revenue / spend : 0;
+    item.promotionNetRoi = spend ? netRevenue / spend : 0;
+    item.promotionAvgNetOrderSpend = netOrders ? spend / netOrders : 0;
+    item.promotionNetRevenueRatio = revenue ? netRevenue / revenue * 100 : 0;
+    item.promotionNetOrdersRatio = orders ? netOrders / orders * 100 : 0;
+    item.promotionAvgNetOrderRevenue = netOrders ? netRevenue / netOrders : 0;
+    item.promotionAvgOrderSpend = orders ? spend / orders : 0;
+    item.promotionAvgOrderRevenue = orders ? revenue / orders : 0;
+    const value = promotionRowMetricValue(promotionSelectedKpi.value, item);
+    const previous = index ? promotionRowMetricValue(promotionSelectedKpi.value, all[index - 1]) : null;
+    const change = previous == null ? '—' : `${value - previous >= 0 ? '+' : ''}${promotionRowMetricDisplay(value - previous, promotionRowMetricTone(promotionSelectedKpi.value))}`;
+    return { ...item, value, display: promotionRowMetricDisplay(value, promotionRowMetricTone(promotionSelectedKpi.value)), change, changeTone: previous == null ? '' : value >= previous ? 'rate-positive' : 'rate-negative' };
+  });
+}
+function buildPromotionDrawerRows(dailyRows, range) {
   const grouped = new Map();
   for (const item of dailyRows) {
     const date = String(item.dataDate || '').slice(0, 10);
-    if (!date) continue;
+    if (!date || (range.start && date < range.start) || (range.end && date > range.end)) continue;
     const source = promotionMetricSource(item);
     source.summaryLinks = item.orderAmount == null ? 0 : 1;
-    const current = grouped.get(date) || { ...source, date, hour: date, hourLabel: date };
+    const current = grouped.get(date) || {
+      ...source,
+      ...(promotionDrawerMode.value === 'row'
+        ? Object.fromEntries(promotionRowDrawerFields.filter((field) => field.tone !== 'text').map((field) => [field.key, 0]))
+        : {}),
+      date,
+      hour: date,
+      hourLabel: date,
+    };
     for (const key of ['spend', 'revenue', 'orders', 'clicks', 'impressions', 'netRevenue', 'directRevenue', 'indirectRevenue', 'favorites', 'follows', 'inquiries']) current[key] += source[key];
+    if (promotionDrawerMode.value === 'row') {
+      // 行级抽屉按日期汇总时，同时累计利润表字段，确保切换任意字段后趋势都有对应值。
+      for (const field of promotionRowDrawerFields) {
+        if (field.tone !== 'text') current[field.key] += Number(item[field.key] || 0);
+      }
+      const orderAmount = Number(current.orderAmount || 0);
+      const goodsCost = Number(current.goodsCost || 0);
+      const shippingCost = Number(current.shippingCost || 0);
+      const promotionSpend = Number(current.promotionSpend || 0);
+      const promotionRevenue = Number(current.promotionRevenue || 0);
+      current.afterRefundOrderAmount = orderAmount - Number(current.refundAmount || 0);
+      current.goodsShippingTotal = goodsCost + shippingCost;
+      current.costPct = ratio(goodsCost, orderAmount);
+      current.goodsShippingPct = ratio(current.goodsShippingTotal, orderAmount);
+      current.grossMargin = ratio(current.grossProfit, orderAmount);
+      current.profitPromotionPct = ratio(promotionSpend, orderAmount);
+      current.profitRate = ratio(current.platformProfit, orderAmount);
+      current.promotionRoi = promotionSpend ? promotionRevenue / promotionSpend : 0;
+      current.promotionNetRoi = promotionSpend ? Number(current.promotionNetRevenue || 0) / promotionSpend : 0;
+      current.settledRoi = Number(current.settledAvgOrderSpend || 0) ? Number(current.settledRevenue || 0) / Number(current.settledAvgOrderSpend || 0) : 0;
+    }
     grouped.set(date, current);
   }
   return [...grouped.values()].sort((a, b) => a.date.localeCompare(b.date)).map((item, index, all) => {
@@ -1589,19 +2058,109 @@ const promotionDrawerHourlyRows = computed(() => {
     const change = previous == null ? '—' : `${value - previous >= 0 ? '+' : ''}${promotionDrawerMode.value === 'row' ? promotionRowMetricDisplay(value - previous, promotionRowMetricTone(promotionSelectedKpi.value)) : formatPromotionMetricDisplay(promotionSelectedKpi.value, value - previous)}`;
     return { ...item, key: item.date, value, display: promotionDrawerMode.value === 'row' ? promotionRowMetricDisplay(value, promotionRowMetricTone(promotionSelectedKpi.value)) : formatPromotionMetricDisplay(promotionSelectedKpi.value, value), change, changeTone: previous == null ? '' : value >= previous ? 'rate-positive' : 'rate-negative' };
   });
+}
+const promotionDrawerHasHourlySource = computed(() => Boolean(promotionDrawerMode.value === 'row'
+  && promotionDrawerHourlyLoaded.value
+  && (promotionDrawerHourlySourceRows.value.length || promotionDrawerPreviousHourlySourceRows.value.length)));
+const promotionDrawerUsesHourlyMetric = computed(() => promotionDrawerHasHourlySource.value && promotionHourlyMetricKeys.has(promotionSelectedKpi.value));
+const promotionDrawerGranularityHint = computed(() => promotionDrawerUsesHourlyMetric.value ? '推广小时数据（日期 + 小时）' : '利润日数据（数据日期）');
+const promotionDrawerTimeColumnLabel = computed(() => promotionDrawerUsesHourlyMetric.value ? '数据日期 + 小时' : '数据日期');
+const promotionDrawerComparisonColumnLabel = computed(() => promotionDrawerUsesHourlyMetric.value ? '对比日期 + 小时' : '对比日期');
+const promotionDrawerHourlyRows = computed(() => {
+  if (promotionDrawerUsesHourlyMetric.value) {
+    return buildPromotionHourlyDrawerRows(
+      promotionDrawerHourlySourceRows.value,
+      { start: promotionFilters.start, end: promotionFilters.end },
+      Boolean(promotionDrawerHourlySourceRows.value.length || promotionDrawerPreviousHourlySourceRows.value.length),
+    );
+  }
+  const dailyRows = promotionDrawerMode.value === 'row' ? (promotionDrawerRow.value?.dailyRows || []) : promotionRows.value.flatMap((row) => row.dailyRows || []);
+  return buildPromotionDrawerRows(dailyRows, { start: promotionFilters.start, end: promotionFilters.end });
 });
-const promotionDrawerHourlyPointsList = computed(() => {
-  const rows = promotionDrawerHourlyRows.value;
-  if (!rows.length) return [];
-  const values = rows.map((row) => row.value);
+const promotionDrawerPreviousHourlyRows = computed(() => {
+  if (promotionDrawerUsesHourlyMetric.value) {
+    return buildPromotionHourlyDrawerRows(
+      promotionDrawerPreviousHourlySourceRows.value,
+      promotionComparisonRange.value,
+      Boolean(promotionDrawerHourlySourceRows.value.length || promotionDrawerPreviousHourlySourceRows.value.length),
+    );
+  }
+  const previous = promotionDrawerMode.value === 'row' ? promotionDrawerComparison.value.previousRow : null;
+  const dailyRows = promotionDrawerMode.value === 'row' ? (previous?.dailyRows || []) : promotionComparisonRows.value.flatMap((row) => row.dailyRows || []);
+  return buildPromotionDrawerRows(dailyRows, promotionComparisonRange.value);
+});
+function buildPromotionTrendPoints(currentRows, comparisonRows) {
+  const slotCount = Math.max(currentRows.length, comparisonRows.length);
+  if (!slotCount) return { current: [], comparison: [] };
+  const values = [...currentRows, ...comparisonRows].map((row) => Number(row.value || 0));
   const min = Math.min(...values);
   const max = Math.max(...values);
   const span = max - min || 1;
   const width = 920;
   const height = 190;
-  return rows.map((row, index) => ({ ...row, x: rows.length === 1 ? width / 2 : index / (rows.length - 1) * width, y: 40 + (1 - (row.value - min) / span) * height }));
+  const pointY = (value) => 40 + (1 - (Number(value || 0) - min) / span) * height;
+  const pointX = (index) => slotCount === 1 ? width / 2 : index / (slotCount - 1) * width;
+  const current = currentRows.map((row, index) => {
+    const compare = comparisonRows[index];
+    return { ...row, x: pointX(index), y: pointY(row.value), tooltip: `当前周期 ${row.date}：${row.display}\\n对比周期 ${compare?.date || '—'}：${compare?.display || '—'}` };
+  });
+  const comparison = comparisonRows.map((row, index) => {
+    const current = currentRows[index];
+    return { ...row, x: pointX(index), y: pointY(row.value), key: `comparison-${row.key}`, tooltip: `对比周期 ${row.date}：${row.display}\\n当前周期 ${current?.date || '—'}：${current?.display || '—'}` };
+  });
+  return { current, comparison };
+}
+const promotionDrawerTrendPoints = computed(() => buildPromotionTrendPoints(promotionDrawerHourlyRows.value, promotionDrawerPreviousHourlyRows.value));
+const promotionHoveredTrendPoint = ref(null);
+const promotionTrendTooltipStyle = computed(() => {
+  const point = promotionHoveredTrendPoint.value;
+  if (!point) return {};
+  const left = Math.min(86, Math.max(14, point.x / 920 * 100));
+  const top = point.y / 270 * 100;
+  return { left: `${left}%`, top: `${Math.max(4, top - 2)}%` };
+});
+function showPromotionTrendTooltip(point, series, index) {
+  const comparePoint = series === 'current' ? promotionDrawerPreviousHourlyPointsList.value[index] : promotionDrawerHourlyPointsList.value[index];
+  promotionHoveredTrendPoint.value = {
+    ...point,
+    seriesLabel: series === 'current' ? '当前周期' : '对比周期',
+    compareSeriesLabel: series === 'current' ? '对比周期' : '当前周期',
+    compareDate: comparePoint?.date || '',
+    compareDisplay: comparePoint?.display || '—',
+  };
+}
+function handlePromotionTrendPointerMove(event) {
+  const points = promotionDrawerHourlyPointsList.value;
+  if (!points.length) return;
+  const rect = event.currentTarget?.getBoundingClientRect?.();
+  if (!rect?.width) return;
+  const chartX = Math.min(920, Math.max(0, (event.clientX - rect.left) / rect.width * 920));
+  let nearestIndex = 0;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  points.forEach((point, index) => {
+    const distance = Math.abs(point.x - chartX);
+    if (distance < nearestDistance) {
+      nearestDistance = distance;
+      nearestIndex = index;
+    }
+  });
+  showPromotionTrendTooltip(points[nearestIndex], 'current', nearestIndex);
+}
+function hidePromotionTrendTooltip() {
+  promotionHoveredTrendPoint.value = null;
+}
+const promotionDrawerHourlyPointsList = computed(() => {
+  return promotionDrawerTrendPoints.value.current;
 });
 const promotionDrawerHourlyPoints = computed(() => promotionDrawerHourlyPointsList.value.map((point) => `${point.x},${point.y}`).join(' '));
+const promotionDrawerPreviousHourlyPointsList = computed(() => promotionDrawerTrendPoints.value.comparison);
+const promotionDrawerPreviousHourlyPoints = computed(() => promotionDrawerPreviousHourlyPointsList.value.map((point) => `${point.x},${point.y}`).join(' '));
+function promotionDrawerComparisonDate(item, index) {
+  const previousDate = promotionDrawerPreviousHourlyRows.value[index]?.hourLabel;
+  if (previousDate) return previousDate;
+  const days = promotionComparisonRange.value.days;
+  return days ? shiftPromotionDate(item?.hourLabel || item?.date, -days) || '—' : '—';
+}
 const promotionTrendRows = computed(() => promotionDrawerHourlyRows.value);
 const promotionTrendPointsList = computed(() => {
   const rows = promotionTrendRows.value;
@@ -1627,6 +2186,7 @@ function openPromotionRowDrawer(row) {
   promotionSelectedKpi.value = 'orderAmount';
   promotionDrawerTab.value = 'trend';
   promotionTrendOpen.value = true;
+  loadPromotionDrawerHourlyData(row);
 }
 function openPromotionTrend(key) {
   promotionSelectedKpi.value = key;
@@ -1637,15 +2197,23 @@ function closePromotionDrawer() {
   promotionTrendOpen.value = false;
   promotionDrawerMode.value = 'kpi';
   promotionDrawerRow.value = null;
+  promotionDrawerHourlyRequestKey.value = '';
+  promotionDrawerHourlyLoading.value = false;
+  promotionDrawerHourlyLoaded.value = false;
+  promotionDrawerHourlySourceRows.value = [];
+  promotionDrawerPreviousHourlySourceRows.value = [];
+  promotionDrawerHourlyError.value = '';
 }
-const promotionPages = computed(() => Math.ceil(promotionRows.value.length / Math.max(1, promotionPageSize.value)));
+const promotionPages = computed(() => Math.ceil(promotionDimensionRows.value.length / Math.max(1, promotionPageSize.value)));
 const pagedPromotionRows = computed(() => {
   const pages = promotionPages.value;
   if (pages && promotionPage.value > pages) promotionPage.value = pages;
   const start = (Math.max(1, promotionPage.value) - 1) * promotionPageSize.value;
   return sortedPromotionRows.value.slice(start, start + promotionPageSize.value);
 });
-const allPromotionSelected = computed(() => pagedPromotionRows.value.length > 0 && pagedPromotionRows.value.every((row) => selectedPromotionIds.value.includes(row.linkId)));
+// 表头“全选”针对当前筛选结果集，而不是当前分页。由于 promotionRows 已经按筛选条件完整加载，
+// 这里用全部排序后的结果判断状态，切换分页时勾选状态就能继续保持。
+const allPromotionSelected = computed(() => sortedPromotionRows.value.length > 0 && sortedPromotionRows.value.every((row) => selectedPromotionIds.value.includes(row.linkId)));
 const promotionExpandedModeLabel = computed(() => ({ detail: '推广详情', data: '数据明细', more: '更多操作' }[promotionExpandedMode.value] || '推广详情'));
 const promotionHourOptions = Object.freeze(Array.from({ length: 24 }, (_, index) => String(index).padStart(2, '0')));
 const promotionHourlyDates = computed(() => [...new Set(promotionHourlySourceRows.value.map((item) => String(item.date || '').slice(0, 10)).filter(Boolean))].sort());
@@ -1931,6 +2499,64 @@ function promotionDateBounds(days = 30) {
   const end = dates.at(-1);
   return [dates[Math.max(0, dates.length - Math.max(1, days))] || dates[0], end];
 }
+function standardFilterRowValue(row, field) {
+  const aliases = {
+    '链接id': 'linkId', '链接 ID': 'linkId', '商品编码': 'productCode', '商品名称': 'title', '商品标题': 'title',
+    '店铺名称': 'storeName', '品牌': 'brand', '负责人': 'person', '链接创建时间': 'createdAt', '数据日期': 'lastDate',
+    '单量': 'profitOrders', '利润单量': 'profitOrders', '收入': 'orderAmount', '订单金额': 'orderAmount', '订单金额(元)': 'orderAmount',
+    '毛利': 'grossProfit', '毛利率': 'grossMargin', '平台利润': 'platformProfit', '利润率': 'profitRate',
+    '推广费': 'profitPromotionFee', '推广费占比': 'profitPromotionPct', '成交花费': 'promotionSpend', '实际投产比': 'promotionRoi',
+    '总花费(元)': 'promotionTotalSpend', '交易额(元)': 'promotionRevenue', '净交易额(元)': 'promotionNetRevenue', '净成交笔数': 'promotionNetOrders',
+    '曝光量': 'impressions', '点击量': 'clicks', '全站推广费比': 'sitePromotionRatio',
+  };
+  return row[aliases[field] || field];
+}
+function normalizeFilterDate(value) {
+  const text = String(value || '').slice(0, 10);
+  return /^\d{8}$/.test(text) ? `${text.slice(0, 4)}-${text.slice(4, 6)}-${text.slice(6, 8)}` : text;
+}
+function matchesStandardFilter(row, filter) {
+  const rawValue = standardFilterRowValue(row, filter.field);
+  const type = linkColumnOptions.value.find((column) => column.key === filter.field)?.type || 'text';
+  const value = rawValue == null ? '' : String(rawValue);
+  const v1 = String(filter.v1 || '').trim();
+  const v2 = String(filter.v2 || '').trim();
+  if (!v1 && !v2) return true;
+  if (filter.field === '链接id' || filter.field === '链接 ID') {
+    const ids = v1.split(/[,，]/).map((item) => item.trim()).filter(Boolean);
+    return ids.includes(String(row.linkId || '').trim());
+  }
+  if (type === 'number') {
+    const number = Number(rawValue);
+    if (!Number.isFinite(number)) return false;
+    const min = v1 ? Number(v1) : null;
+    const max = v2 ? Number(v2) : null;
+    if (filter.op === 'eq' || filter.op === 'equals') return min == null || number === min;
+    if (filter.op === 'gte') return min == null || number >= min;
+    if (filter.op === 'lte') return min == null || number <= min;
+    return (min == null || number >= min) && (max == null || number <= max);
+  }
+  if (type === 'date') {
+    const actual = normalizeFilterDate(value);
+    if (filter.op === 'gte') return !v1 || actual >= v1;
+    if (filter.op === 'lte') return !v1 || actual <= v1;
+    if (filter.op === 'between') return (!v1 || actual >= v1) && (!v2 || actual <= v2);
+    return actual === v1;
+  }
+  return filter.op === 'equals' || filter.op === 'eq' ? value === v1 : value.toLocaleLowerCase('zh-CN').includes(v1.toLocaleLowerCase('zh-CN'));
+}
+function filterPromotionRowsByPreset(rows) {
+  const filters = activeLinkPresetFilters.value;
+  return filters.length ? rows.filter((row) => filters.every((filter) => matchesStandardFilter(row, filter))) : rows;
+}
+async function applyLinkPreset() {
+  const preset = linkFilterPresets.value.find((item) => item.id === String(activeLinkPresetId.value));
+  activeLinkPresetFilters.value = preset?.filters ? preset.filters.map((filter) => ({ ...filter })) : [];
+  linkFilters.splice(0, linkFilters.length, ...activeLinkPresetFilters.value.map((filter, index) => ({ ...filter, id: `preset-${index}` })));
+  promotionPage.value = 1;
+  promotionExpandedKey.value = '';
+  await applyRange();
+}
 function setPromotionDatePreset(key) {
   promotionDatePreset.value = key;
   const days = key === 'today' ? 1 : key === 'yesterday' ? 2 : key === '7d' ? 7 : key === '90d' ? 90 : 30;
@@ -1955,21 +2581,76 @@ async function rebuildPromotionRows() {
       store_name: globalFilters.store_name,
       store_person: globalFilters.store_person,
       ...creationParams(),
+      ...ordersFilterParams(),
+      filter_json: globalCustomFilterJson(),
     });
     if (!response?.success) throw new Error(response?.error || '链接经营数据加载失败');
-    const rows = (response.data || []).filter((row) => {
+    const rows = filterPromotionRowsByPreset((response.data || []).filter((row) => {
       if (promotionFilters.status && row.status !== promotionFilters.status) return false;
       if (promotionFilters.stage && row.stage !== promotionFilters.stage) return false;
       return true;
-    });
+    }));
     promotionRows.value = rows;
     promotionPage.value = Math.min(promotionPage.value, Math.max(1, Math.ceil(rows.length / promotionPageSize.value)));
     selectedPromotionIds.value = selectedPromotionIds.value.filter((id) => rows.some((row) => row.linkId === id));
+    await rebuildPromotionComparison();
   } catch (err) {
     promotionRows.value = [];
+    promotionComparisonRows.value = [];
     promotionNotice(err.message || '推广数据加载失败');
   } finally {
     promotionLoading.value = false;
+  }
+}
+async function rebuildPromotionComparison() {
+  const range = promotionComparisonRange.value;
+  if (!range.start || !range.end) {
+    promotionComparisonRows.value = [];
+    promotionComparisonRequestKey.value = '';
+    return;
+  }
+  const requestKey = JSON.stringify({
+    start: range.start,
+    end: range.end,
+    search: promotionFilters.search,
+    link_ids: globalFilters.link_ids,
+    product_code: globalFilters.product_code,
+    product_name: globalFilters.product_name,
+    brand: promotionFilters.brand || globalFilters.brand,
+    store_name: globalFilters.store_name,
+    store_person: globalFilters.store_person,
+    orders: globalFilters.orders,
+    creation: creationParams(),
+    customFilters: activeLinkPresetFilters.value,
+  });
+  if (requestKey === promotionComparisonRequestKey.value) return;
+  promotionComparisonRequestKey.value = requestKey;
+  promotionComparisonLoading.value = true;
+  promotionComparisonError.value = '';
+  try {
+    const response = await loadLinkOperatingSummary({
+      page: 1,
+      size: 20000,
+      start: range.start,
+      end: range.end,
+      search: promotionFilters.search,
+      link_ids: globalFilters.link_ids,
+      product_code: globalFilters.product_code,
+      product_name: globalFilters.product_name,
+      brand: promotionFilters.brand || globalFilters.brand,
+      store_name: globalFilters.store_name,
+      store_person: globalFilters.store_person,
+      ...creationParams(),
+      ...ordersFilterParams(),
+      filter_json: globalCustomFilterJson(),
+    });
+    if (!response?.success) throw new Error(response?.error || '对比周期数据加载失败');
+    promotionComparisonRows.value = filterPromotionRowsByPreset(response.data || []);
+  } catch (err) {
+    promotionComparisonRows.value = [];
+    promotionComparisonError.value = err.message || '对比周期数据加载失败';
+  } finally {
+    promotionComparisonLoading.value = false;
   }
 }
 function applyPromotionFilters() {
@@ -1978,15 +2659,22 @@ function applyPromotionFilters() {
   promotionExpandedKey.value = '';
   rebuildPromotionRows();
 }
+function setPromotionDimension(key) {
+  if (!promotionDimensions.some((item) => item.key === key) || promotionDimension.value === key) return;
+  promotionDimension.value = key;
+  promotionPage.value = 1;
+  promotionExpandedKey.value = '';
+  selectedPromotionIds.value = [];
+}
 function clearPromotionFilters() {
   Object.assign(promotionFilters, { search: '', status: '', bidType: '', stage: '', brand: '' });
   setPromotionDatePreset('30d');
 }
 function toggleAllPromotion(event) {
-  const pageIds = pagedPromotionRows.value.map((row) => row.linkId);
+  const resultIds = sortedPromotionRows.value.map((row) => row.linkId);
   selectedPromotionIds.value = event.target.checked
-    ? [...new Set([...selectedPromotionIds.value, ...pageIds])]
-    : selectedPromotionIds.value.filter((id) => !pageIds.includes(id));
+    ? [...new Set([...selectedPromotionIds.value, ...resultIds])]
+    : selectedPromotionIds.value.filter((id) => !resultIds.includes(id));
 }
 async function togglePromotionDetails(row, mode) {
   if (promotionExpandedKey.value === row.linkId && promotionExpandedMode.value === mode) return closePromotionDetails();
@@ -1996,7 +2684,7 @@ async function togglePromotionDetails(row, mode) {
   promotionHourDate.value = 'all';
   promotionHourlySourceRows.value = [];
   promotionHourlyError.value = '';
-  if (mode !== 'data') return;
+  if (mode !== 'data' || promotionDimension.value !== 'link') return;
   promotionHourlyLoading.value = true;
   try {
     const response = await loadPromotionHourly({
@@ -2015,7 +2703,46 @@ async function togglePromotionDetails(row, mode) {
     promotionHourlyLoading.value = false;
   }
 }
+async function loadPromotionDrawerHourlyData(row) {
+  promotionDrawerHourlyLoaded.value = false;
+  promotionDrawerHourlyError.value = '';
+  promotionDrawerHourlySourceRows.value = [];
+  promotionDrawerPreviousHourlySourceRows.value = [];
+  if (promotionDimension.value !== 'link' || !row?.linkId || !promotionFilters.start || !promotionFilters.end) return;
+  const currentRange = { start: promotionFilters.start, end: promotionFilters.end };
+  const previousRange = promotionComparisonRange.value;
+  const requestKey = JSON.stringify({ linkId: row.linkId, storeName: row.storeName, currentRange, previousRange });
+  promotionDrawerHourlyRequestKey.value = requestKey;
+  promotionDrawerHourlyLoading.value = true;
+  const params = (range) => ({
+    link_id: row.linkId,
+    product_id: row.linkId,
+    product_name: row.title,
+    store_name: row.storeName || '',
+    start: range.start,
+    end: range.end,
+    size: 20000,
+  });
+  try {
+    const [currentResponse, previousResponse] = await Promise.all([
+      loadPromotionHourly(params(currentRange)),
+      previousRange.start && previousRange.end ? loadPromotionHourly(params(previousRange)) : Promise.resolve({ success: true, data: [] }),
+    ]);
+    if (requestKey !== promotionDrawerHourlyRequestKey.value) return;
+    if (!currentResponse?.success) throw new Error(currentResponse?.error || '当前周期推广小时数据加载失败');
+    if (!previousResponse?.success) throw new Error(previousResponse?.error || '对比周期推广小时数据加载失败');
+    promotionDrawerHourlySourceRows.value = currentResponse.data || [];
+    promotionDrawerPreviousHourlySourceRows.value = previousResponse.data || [];
+    promotionDrawerHourlyLoaded.value = true;
+  } catch (err) {
+    if (requestKey === promotionDrawerHourlyRequestKey.value) promotionDrawerHourlyError.value = err.message || '推广小时数据加载失败';
+  } finally {
+    if (requestKey === promotionDrawerHourlyRequestKey.value) promotionDrawerHourlyLoading.value = false;
+  }
+}
 function closePromotionDetails() { promotionExpandedKey.value = ''; promotionHourlySourceRows.value = []; promotionHourlyError.value = ''; }
+function openPromotionImagePreview(imageUrl) { if (imageUrl) promotionImagePreviewUrl.value = imageUrl; }
+function closePromotionImagePreview() { promotionImagePreviewUrl.value = ''; }
 function formatPromotionMoney(value) { return `${Number(value || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`; }
 function formatPromotionValue(value, column) {
   if (column.key === 'title') return String(value || '—');
@@ -2110,9 +2837,29 @@ function goalNodeExpanded(key) { return expandedGoalNodes.value.has(key); }
 function toggleGoalNode(key) { const next = new Set(expandedGoalNodes.value); if (next.has(key)) { next.delete(key); if (key === 'root') { next.delete('brand'); next.delete('person'); } } else next.add(key); expandedGoalNodes.value = next; }
 function setRange(preset) { rangePreset.value = preset; const dates = availableDates.value; if (!dates.length) return; const end = dates.at(-1); if (preset === 'all') { dateStart.value = dates[0]; dateEnd.value = end; } else if (preset === 'month') { const month = end.slice(0, 7); const inMonth = dates.filter((date) => date.startsWith(month)); dateStart.value = inMonth[0]; dateEnd.value = inMonth.at(-1); } else { const days = preset === 'yesterday' ? 1 : preset === '3d' ? 3 : preset === '14d' ? 14 : preset === '30d' ? 30 : 7; dateStart.value = dates[Math.max(0, dates.length - days)]; dateEnd.value = end; } }
 function creationParams() { if (creationFilter.mode === 'custom') return { creation_start: creationFilter.start, creation_end: creationFilter.end }; return { creation_days: Math.max(1, Number(creationFilter.days || 1)) }; }
-function globalFilterParams() { return { ...creationParams(), link_ids: globalFilters.link_ids.trim(), product_code: globalFilters.product_code.trim(), product_name: globalFilters.product_name.trim(), brand: globalFilters.brand, store_name: globalFilters.store_name.trim(), store_person: globalFilters.store_person }; }
+function ordersFilterParams() {
+  const orders = Number(String(globalFilters.orders || '').trim());
+  if (!Number.isFinite(orders) || orders < 0) return {};
+  return { orders_gte: orders, orders_lte: orders };
+}
+function globalCustomFilterJson() {
+  return activeLinkPresetFilters.value.length ? JSON.stringify(activeLinkPresetFilters.value) : '';
+}
+function globalFilterParams() {
+  return {
+    ...creationParams(),
+    ...ordersFilterParams(),
+    link_ids: globalFilters.link_ids.trim(),
+    product_code: globalFilters.product_code.trim(),
+    product_name: globalFilters.product_name.trim(),
+    brand: globalFilters.brand,
+    store_name: globalFilters.store_name.trim(),
+    store_person: globalFilters.store_person,
+    filter_json: globalCustomFilterJson(),
+  };
+}
 async function applyRange() { if (dateStart.value > dateEnd.value) [dateStart.value, dateEnd.value] = [dateEnd.value, dateStart.value]; if (creationFilter.mode === 'custom' && creationFilter.start && creationFilter.end && creationFilter.start > creationFilter.end) [creationFilter.start, creationFilter.end] = [creationFilter.end, creationFilter.start]; linkDataDateStart.value = dateStart.value; linkDataDateEnd.value = dateEnd.value; rangePreset.value = ''; await loadAll(globalFilterParams()); if (activeTab.value === 'promotion') await refreshPromotionLinkViews(); else await refreshLinkViews(); }
-async function clearGlobalFilters() { Object.assign(globalFilters, { link_ids: '', product_code: '', product_name: '', brand: '', store_name: '', store_person: '' }); Object.assign(creationFilter, { mode: 'age', days: 30, start: '', end: '' }); expandedLinkSummaryId.value = ''; linkSummaryDailyRows.value = []; linkSummaryDailyError.value = ''; await applyRange(); }
+async function clearGlobalFilters() { Object.assign(globalFilters, { link_ids: '', product_code: '', product_name: '', orders: '', brand: '', store_name: '', store_person: '' }); Object.assign(creationFilter, { mode: 'age', days: 30, start: '', end: '' }); activeLinkPresetId.value = ''; activeLinkPresetFilters.value = []; linkFilters.splice(0); expandedLinkSummaryId.value = ''; linkSummaryDailyRows.value = []; linkSummaryDailyError.value = ''; await applyRange(); }
 function loadTargetForm() { const source = activeTarget.value || {}; targetForm.monthTarget = Number(source.monthTarget || 0); targetForm.profitRate = Number(source.profitRate || 0); targetForm.persons = { ...(source.persons || {}) }; targetForm.brands = { ...(source.brands || {}) }; }
 async function saveCurrentTargets() { savingTargets.value = true; targetMessage.value = ''; try { await saveTargets(activeMonth.value, { monthTarget: targetForm.monthTarget || '', profitRate: targetForm.profitRate || '', persons: targetForm.persons, brands: targetForm.brands }); targetMessage.value = '已保存并同步到 API'; } catch (err) { targetMessage.value = err.message; } finally { savingTargets.value = false; } }
 function createStandardFilterConfig(open = true) {
@@ -2120,15 +2867,15 @@ function createStandardFilterConfig(open = true) {
 }
 function normalizeStandardFilterConfig(source = {}, legacy = {}) {
   const raw = source && typeof source === 'object' ? source : {};
-  const filters = Array.isArray(raw.filters) ? raw.filters.map((filter, index) => ({ id: filter.id || `standard-${Date.now()}-${index}`, field: filter.field || '', op: filter.op || 'contains', v1: filter.v1 || '', v2: filter.v2 || '' })) : [];
+  const filters = Array.isArray(raw.filters) ? raw.filters.map((filter, index) => ({ id: filter.id || `standard-${Date.now()}-${index}`, field: filter.field || '', fieldSearch: '', op: filter.op || 'contains', v1: filter.v1 || '', v2: filter.v2 || '' })) : [];
   const addLegacyFilter = (field, value) => {
-    if (value && !filters.some((filter) => filter.field === field)) filters.unshift({ id: `standard-legacy-${Date.now()}-${field}`, field, op: 'contains', v1: value, v2: '' });
+    if (value && !filters.some((filter) => filter.field === field)) filters.unshift({ id: `standard-legacy-${Date.now()}-${field}`, field, fieldSearch: '', op: 'contains', v1: value, v2: '' });
   };
   addLegacyFilter('链接id', raw.linkIds);
   addLegacyFilter('品牌', legacy.brand);
   addLegacyFilter('商品编码', legacy.productCode);
   addLegacyFilter('商品名称', legacy.productName);
-  if ((raw.dateStart || raw.dateEnd) && !filters.some((filter) => filter.field === '链接创建时间')) filters.unshift({ id: `standard-legacy-${Date.now()}-creation`, field: '链接创建时间', op: 'between', v1: raw.dateStart || '', v2: raw.dateEnd || '' });
+  if ((raw.dateStart || raw.dateEnd) && !filters.some((filter) => filter.field === '链接创建时间')) filters.unshift({ id: `standard-legacy-${Date.now()}-creation`, field: '链接创建时间', fieldSearch: '', op: 'between', v1: raw.dateStart || '', v2: raw.dateEnd || '' });
   return {
     ...createStandardFilterConfig(false),
     pageSize: Number(raw.pageSize || 20),
@@ -2149,7 +2896,7 @@ function addStandardRow() { standardRows.value.push({ _key: `new-${Date.now()}`,
 async function saveStandardRow(row) { row.saving = true; try { const payload = { ...row, brand: '', productCode: '', productName: '', filterConfig: serializeStandardFilterConfig(row.filterConfig) }; delete payload._key; delete payload.saving; await saveStandard(payload); } catch (err) { window.alert(err.message || '标准保存失败'); } finally { row.saving = false; } }
 async function removeStandardRow(row) { if (!row.id) { standardRows.value = standardRows.value.filter((item) => item !== row); return; } if (!window.confirm('确认删除这条链接设置？')) return; try { await deleteStandard(row.id); } catch (err) { window.alert(err.message || '标准删除失败'); } }
 async function fetchLinks(page = 1) {
-  const activeFilters = activeLinkFilters.value;
+  const activeFilters = [...activeLinkPresetFilters.value, ...activeLinkFilters.value];
   await loadLinks({
     page,
     size: linkQuery.size,
@@ -2163,12 +2910,13 @@ async function fetchLinks(page = 1) {
     store_name: globalFilters.store_name,
     store_person: globalFilters.store_person || linkQuery.store_person,
     ...creationParams(),
+    ...ordersFilterParams(),
     profit_rate_lte: linkQuery.profit_rate_lte,
     filter_json: activeFilters.length ? JSON.stringify(activeFilters) : '',
   });
   selectedLinks.value = [];
 }
-async function fetchLinkDashboard(page = 1) { await loadLinkDashboard({ page, size: linkQuery.size, start: dateStart.value, end: dateEnd.value, search: linkQuery.search, link_ids: globalFilters.link_ids, product_code: globalFilters.product_code, product_name: globalFilters.product_name, brand: globalFilters.brand, store_name: globalFilters.store_name, store_person: globalFilters.store_person, ...creationParams() }); }
+async function fetchLinkDashboard(page = 1) { await loadLinkDashboard({ page, size: linkQuery.size, start: dateStart.value, end: dateEnd.value, search: linkQuery.search, link_ids: globalFilters.link_ids, product_code: globalFilters.product_code, product_name: globalFilters.product_name, brand: globalFilters.brand, store_name: globalFilters.store_name, store_person: globalFilters.store_person, ...creationParams(), ...ordersFilterParams(), filter_json: globalCustomFilterJson() }); }
 function changeLinkSummarySort(key) {
   const column = linkSummaryColumns.find((item) => item.key === key);
   if (!column) return;
@@ -2176,7 +2924,7 @@ function changeLinkSummarySort(key) {
   else { linkSummarySort.key = key; linkSummarySort.order = 'desc'; }
   fetchLinkSummary(1);
 }
-async function fetchLinkSummary(page = 1) { await loadLinkSummary({ page, size: linkSummaryQuery.size, start: dateStart.value, end: dateEnd.value, search: linkSummaryQuery.search, link_ids: globalFilters.link_ids, product_code: globalFilters.product_code, product_name: globalFilters.product_name, brand: globalFilters.brand, store_name: globalFilters.store_name, store_person: globalFilters.store_person, sort_by: linkSummarySort.key, sort_order: linkSummarySort.order, ...creationParams() }); }
+async function fetchLinkSummary(page = 1) { await loadLinkSummary({ page, size: linkSummaryQuery.size, start: dateStart.value, end: dateEnd.value, search: linkSummaryQuery.search, link_ids: globalFilters.link_ids, product_code: globalFilters.product_code, product_name: globalFilters.product_name, brand: globalFilters.brand, store_name: globalFilters.store_name, store_person: globalFilters.store_person, sort_by: linkSummarySort.key, sort_order: linkSummarySort.order, ...creationParams(), ...ordersFilterParams(), filter_json: globalCustomFilterJson() }); }
 async function toggleLinkSummaryRow(row) {
   const linkId = String(row?.linkId || '').trim();
   if (!linkId) return;
@@ -2194,7 +2942,7 @@ async function toggleLinkSummaryRow(row) {
   linkDataLinkIds.value = '';
   try {
     await applyRange();
-    const result = await queryLinks({ page: 1, size: 100, start: dateStart.value, end: dateEnd.value, link_ids: linkId, ...creationParams() });
+    const result = await queryLinks({ page: 1, size: 100, start: dateStart.value, end: dateEnd.value, link_ids: linkId, ...creationParams(), ...ordersFilterParams(), filter_json: globalCustomFilterJson() });
     linkSummaryDailyRows.value = result.data || [];
   } catch (err) {
     linkSummaryDailyError.value = err.message || '每日明细加载失败';
@@ -2222,13 +2970,13 @@ function linkFilterInputType(filter) { return linkFilterType(filter) === 'date' 
 function linkFilterPlaceholder(filter) { return filter.field === '链接id' ? '支持逗号分隔多个链接 ID' : linkFilterType(filter) === 'text' ? '包含值' : '值'; }
 function linkFilterUsesSecondValue(filter) { return linkFilterType(filter) !== 'text' && filter.op === 'between'; }
 function onLinkFilterFieldChange(filter) { filter.op = linkFilterType(filter) === 'text' ? 'contains' : 'between'; filter.v1 = ''; filter.v2 = ''; }
-function normalizeLinkFilterOperator(filter) { if (linkFilterType(filter) === 'text') filter.op = 'contains'; if (filter.op !== 'between') filter.v2 = ''; }
+function normalizeLinkFilterOperator(filter) { const type = linkFilterType(filter); if (type === 'text' && !['contains', 'eq', 'equals'].includes(filter.op)) filter.op = 'contains'; if (type !== 'text' && !['between', 'eq', 'equals', 'gte', 'lte'].includes(filter.op)) filter.op = 'between'; if (filter.op !== 'between') filter.v2 = ''; }
 function addLinkFilter() { linkFilters.push({ id: ++linkFilterId, field: '', op: 'contains', v1: '', v2: '' }); }
 function removeLinkFilter(index) { linkFilters.splice(index, 1); applyLinkFilters(); }
 const activeLinkFilters = computed(() => linkFilters.filter((filter) => filter.field && (filter.v1 || filter.v2)).map(({ field, op, v1, v2 }) => ({ field, op, v1, v2 })));
 const linkFilterSummary = computed(() => activeLinkFilters.value.map((filter) => {
   const label = linkColumnOptions.value.find((column) => column.key === filter.field)?.label || filter.field;
-  const text = filter.op === 'between' ? `${filter.v1} ~ ${filter.v2}` : filter.op === 'gte' ? `≥ ${filter.v1}` : filter.op === 'lte' ? `≤ ${filter.v1}` : `包含 ${filter.v1}`;
+  const text = filter.op === 'between' ? `${filter.v1} ~ ${filter.v2}` : filter.op === 'gte' ? `≥ ${filter.v1}` : filter.op === 'lte' ? `≤ ${filter.v1}` : filter.op === 'eq' || filter.op === 'equals' ? `= ${filter.v1}` : `包含 ${filter.v1}`;
   return `${label} ${text}`;
 }).join(' AND '));
 function applyLinkFilters() { normalizeLinkDataDateRange(); refreshLinkData(); }
@@ -2244,23 +2992,30 @@ function toggleLinkColumn(key, checked) {
   visibleLinkColumnKeys.value = selected.length === allKeys.length ? null : selected;
 }
 function selectAllLinkColumns(checked) { visibleLinkColumnKeys.value = checked ? null : []; }
+function standardFilterFieldOptions(filter) {
+  const query = String(filter.fieldSearch || '').trim().toLowerCase();
+  const selected = linkColumnOptions.value.find((field) => field.key === filter.field);
+  const options = query ? linkColumnOptions.value.filter((field) => `${field.label} ${field.key}`.toLowerCase().includes(query)) : linkColumnOptions.value;
+  if (selected && !options.some((field) => field.key === selected.key)) return [selected, ...options];
+  return options;
+}
 function standardFilterType(row, filter) { return linkColumnOptions.value.find((column) => column.key === filter.field)?.type || 'text'; }
 function standardFilterInputType(row, filter) { const type = standardFilterType(row, filter); return type === 'date' ? 'date' : type === 'number' ? 'number' : 'text'; }
 function standardFilterPlaceholder(row, filter) { return filter.field === '链接id' ? '支持逗号分隔多个链接 ID' : standardFilterType(row, filter) === 'text' ? '包含值' : '值'; }
 function standardFilterUsesSecondValue(row, filter) { return standardFilterType(row, filter) !== 'text' && filter.op === 'between'; }
-function onStandardFilterFieldChange(row, filter) { filter.op = standardFilterType(row, filter) === 'text' ? 'contains' : 'between'; filter.v1 = ''; filter.v2 = ''; }
-function normalizeStandardFilterOperator(row, filter) { if (standardFilterType(row, filter) === 'text') filter.op = 'contains'; if (filter.op !== 'between') filter.v2 = ''; }
-function addStandardFilter(row) { row.filterConfig.filters.push({ id: `standard-filter-${++standardFilterId}`, field: '', op: 'contains', v1: '', v2: '' }); }
+function onStandardFilterFieldChange(row, filter) { filter.fieldSearch = ''; filter.op = standardFilterType(row, filter) === 'text' ? 'contains' : 'between'; filter.v1 = ''; filter.v2 = ''; }
+function normalizeStandardFilterOperator(row, filter) { const type = standardFilterType(row, filter); if (type === 'text' && !['contains', 'eq', 'equals'].includes(filter.op)) filter.op = 'contains'; if (type !== 'text' && !['between', 'eq', 'equals', 'gte', 'lte'].includes(filter.op)) filter.op = 'between'; if (filter.op !== 'between') filter.v2 = ''; }
+function addStandardFilter(row) { row.filterConfig.filters.push({ id: `standard-filter-${++standardFilterId}`, field: '', fieldSearch: '', op: 'contains', v1: '', v2: '' }); }
 function removeStandardFilter(row, index) { row.filterConfig.filters.splice(index, 1); }
 function toggleStandardColumn(row, key, checked) { const allKeys = linkColumnOptions.value.map((column) => column.key); const selected = row.filterConfig.visibleFields === null ? [...allKeys] : [...row.filterConfig.visibleFields]; if (checked && !selected.includes(key)) selected.push(key); if (!checked) { const index = selected.indexOf(key); if (index >= 0) selected.splice(index, 1); } row.filterConfig.visibleFields = selected.length === allKeys.length ? null : selected; }
 function selectAllStandardColumns(row, checked) { row.filterConfig.visibleFields = checked ? null : []; }
 function standardActiveFilters(row) {
   return (row.filterConfig.filters || []).filter((filter) => filter.field && (filter.v1 || filter.v2)).map(({ field, op, v1, v2 }) => ({ field, op, v1, v2 }));
 }
-function standardFilterSummary(row) { return standardActiveFilters(row).map((filter) => { const label = linkColumnOptions.value.find((column) => column.key === filter.field)?.label || filter.field; const text = filter.op === 'between' ? `${filter.v1} ~ ${filter.v2}` : filter.op === 'gte' ? `≥ ${filter.v1}` : filter.op === 'lte' ? `≤ ${filter.v1}` : `包含 ${filter.v1}`; return `${label} ${text}`; }).join(' AND '); }
+function standardFilterSummary(row) { return standardActiveFilters(row).map((filter) => { const label = linkColumnOptions.value.find((column) => column.key === filter.field)?.label || filter.field; const text = filter.op === 'between' ? `${filter.v1} ~ ${filter.v2}` : filter.op === 'gte' ? `≥ ${filter.v1}` : filter.op === 'lte' ? `≤ ${filter.v1}` : filter.op === 'eq' || filter.op === 'equals' ? `= ${filter.v1}` : `包含 ${filter.v1}`; return `${label} ${text}`; }).join(' AND '); }
 function standardFilterParams(row) {
   const config = row.filterConfig;
-  return { page: 1, size: Number(config.pageSize || 20), start: dateStart.value, end: dateEnd.value, link_ids: globalFilters.link_ids || '', product_code: globalFilters.product_code || '', product_name: globalFilters.product_name || '', brand: globalFilters.brand || '', store_name: globalFilters.store_name || '', store_person: globalFilters.store_person || '', ...creationParams(), filter_json: JSON.stringify(standardActiveFilters(row)), aggregate: 'link_person' };
+  return { page: 1, size: Number(config.pageSize || 20), start: dateStart.value, end: dateEnd.value, link_ids: globalFilters.link_ids || '', product_code: globalFilters.product_code || '', product_name: globalFilters.product_name || '', brand: globalFilters.brand || '', store_name: globalFilters.store_name || '', store_person: globalFilters.store_person || '', ...creationParams(), ...ordersFilterParams(), filter_json: JSON.stringify(standardActiveFilters(row)), aggregate: 'link_person' };
 }
 async function queryStandardRow(row) { const config = row.filterConfig; config.querying = true; config.message = ''; try { const result = await queryLinks(standardFilterParams(row)); config.previewRows = result.data || []; config.previewMeta = { total: result.total || 0, page: result.page || 1, pages: result.pages || 0, size: result.size || config.pageSize }; config.message = `匹配 ${Number(result.total || 0).toLocaleString()} 组`; } catch (err) { config.previewRows = []; config.previewMeta = { total: 0, page: 1, pages: 0, size: config.pageSize }; config.message = err.message || '查询失败'; } finally { config.querying = false; } }
 function exportStandardRow(row) { const config = row.filterConfig; if (!config.previewRows.length) return; const selected = config.visibleFields === null ? linkColumnOptions.value : linkColumnOptions.value.filter((column) => config.visibleFields.includes(column.key)); if (!selected.length) return; const escape = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`; const header = selected.map((column) => escape(column.label)).join(','); const rows = config.previewRows.map((item) => selected.map((column) => escape(formatLinkValue(item[column.key], column.key, item))).join(',')); const blob = new Blob([`\uFEFF${[header, ...rows].join('\n')}`], { type: 'text/csv;charset=utf-8' }); const anchor = document.createElement('a'); anchor.href = URL.createObjectURL(blob); anchor.download = `link_setting_${row.id || 'draft'}_${new Date().toISOString().slice(0, 10)}.csv`; anchor.click(); URL.revokeObjectURL(anchor.href); }
@@ -2287,19 +3042,59 @@ function exportLinksCsv() {
 const allLinksSelected = computed(() => links.value.length > 0 && links.value.every((row) => selectedLinks.value.includes(row['链接id'])));
 function toggleAllLinks(event) { selectedLinks.value = event.target.checked ? links.value.map((row) => row['链接id']) : []; }
 async function submitSelectedLinks() {
-  const linkIds = [...selectedOperationIds.value];
+  const linkIds = [...delistOperationIds.value];
   if (!linkIds.length) return;
-  const stores = linkIds.map((linkId) => {
-    const promotionRow = promotionRows.value.find((row) => String(row.linkId) === String(linkId));
-    const linkRow = links.value.find((row) => String(row['链接id']) === String(linkId));
-    return promotionRow?.storeName || linkRow?.['店铺名称'] || '';
-  }).filter(Boolean);
-  const response = await submitDelist({ task_type: 'delist', operation: 'delist', operation_type: 'delist', operation_name: '产品下架', operation_label: '产品下架', link_ids: linkIds, store_names: [...new Set(stores)], operator: '链接监控' });
-  window.alert(response?.success ? `已提交 ${linkIds.length} 条下架任务` : response?.error || '提交失败');
-  selectedPromotionIds.value = [];
-  selectedLinks.value = [];
+  delisting.value = true;
+  delistMessage.value = '';
+  try {
+    const response = await submitDelist({
+      task_type: 'delist',
+      operation: 'delist',
+      operation_type: 'delist',
+      operation_name: '产品下架',
+      operation_label: '产品下架',
+      link_ids: linkIds,
+      store_names: [...new Set(selectedDelistLinkRows.value.map((item) => item.storeName).filter(Boolean))],
+      operator: '链接监控',
+    });
+    if (!response?.success) throw new Error(response?.error || '产品下架提交失败');
+    delistConfirmOpen.value = false;
+    window.alert(`已提交 ${linkIds.length} 条下架任务`);
+    selectedPromotionIds.value = [];
+    selectedLinks.value = [];
+    delistTargetIds.value = [];
+  } catch (err) {
+    delistMessage.value = err.message || '产品下架提交失败';
+  } finally {
+    delisting.value = false;
+  }
+}
+function openDelistConfirm() {
+  if (!selectedOperationIds.value.length) return;
+  delistTargetIds.value = [];
+  delistMessage.value = '';
+  delistConfirmOpen.value = true;
+}
+function openRowDelistConfirm(row) {
+  if (!row?.linkId) return;
+  delistTargetIds.value = [String(row.linkId)];
+  delistMessage.value = '';
+  delistConfirmOpen.value = true;
+}
+function closeDelistConfirm() {
+  if (!delisting.value) {
+    delistConfirmOpen.value = false;
+    delistMessage.value = '';
+    delistTargetIds.value = [];
+  }
 }
 const selectedLinkRows = computed(() => selectedOperationIds.value.map((linkId) => {
+  const promotionRow = promotionRows.value.find((item) => String(item.linkId) === String(linkId));
+  const linkRow = links.value.find((item) => String(item['链接id']) === String(linkId));
+  return { linkId, storeName: promotionRow?.storeName || linkRow?.['店铺名称'] || '' };
+}));
+const delistOperationIds = computed(() => delistTargetIds.value.length ? delistTargetIds.value : selectedOperationIds.value);
+const selectedDelistLinkRows = computed(() => delistOperationIds.value.map((linkId) => {
   const promotionRow = promotionRows.value.find((item) => String(item.linkId) === String(linkId));
   const linkRow = links.value.find((item) => String(item['链接id']) === String(linkId));
   return { linkId, storeName: promotionRow?.storeName || linkRow?.['店铺名称'] || '' };

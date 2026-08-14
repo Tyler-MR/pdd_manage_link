@@ -978,9 +978,12 @@ def get_data(
     brand: str = Query(default=""),
     store_name: str = Query(default=""),
     store_person: str = Query(default=""),
+    orders_gte: float = Query(default=None),
+    orders_lte: float = Query(default=None),
     creation_days: int = Query(default=None, ge=1, le=3650),
     creation_start: str = Query(default=""),
     creation_end: str = Query(default=""),
+    filter_json: str = Query(default=""),
 ):
     """从 MySQL 读取数据并聚合，返回看板所需 JSON。
 
@@ -1010,6 +1013,8 @@ def get_data(
         params.append(store_person.strip())
     conn = get_mysql()
     _append_creation_filter(where, params, creation_days, creation_start, creation_end, f"{TABLE_NAME}.`链接id`", conn)
+    _add_range(where, params, "单量", orders_gte, orders_lte)
+    _apply_link_json_filters(where, params, filter_json, _link_schema(conn.cursor()))
 
     where_sql = f" WHERE {' AND '.join(where)}" if where else ""
     try:
@@ -1217,19 +1222,31 @@ def get_promotion_hourly(
         where.append("promotion_hour LIKE %s")
         params.append(f"{hour}%")
 
-    select_sql = f"""
-        SELECT data_date, promotion_hour, product_id, product_name, store_name,
-               spend, total_spend, revenue, net_revenue, roi, net_roi,
-               impressions, clicks, orders, net_orders, direct_revenue,
-               indirect_revenue, source_file
-        FROM {PROMOTION_HOURLY_TABLE}
-        WHERE {' AND '.join(where)}
-        ORDER BY data_date, promotion_hour, product_id
-        LIMIT %s
-    """
+    # 小时抽屉需要读取推广表的完整指标；对旧表做字段探测，避免历史表缺列时整条接口失败。
+    requested_columns = [
+        "data_date", "promotion_hour", "product_id", "product_name", "store_name", "source_file",
+        "spend", "total_spend", "revenue", "net_revenue", "roi", "net_roi", "net_orders", "orders",
+        "direct_revenue", "indirect_revenue", "direct_orders", "indirect_orders", "impressions", "clicks",
+        "settled_revenue", "settled_roi", "settled_orders", "refund_exemption_rate", "cancel_exemption_rate",
+        "avg_settled_order_spend", "revenue_settlement_rate", "order_settlement_rate", "avg_settled_order_revenue",
+        "avg_net_order_spend", "net_revenue_ratio", "net_orders_ratio", "avg_net_order_revenue",
+        "avg_order_spend", "avg_order_revenue", "site_promotion_ratio",
+    ]
     params.append(size)
     conn = get_mysql()
     try:
+        schema_cur = conn.cursor()
+        schema_cur.execute(f"SHOW COLUMNS FROM {PROMOTION_HOURLY_TABLE}")
+        available_columns = {row[0] for row in schema_cur.fetchall()}
+        schema_cur.close()
+        select_columns = [column for column in requested_columns if column in available_columns]
+        select_sql = f"""
+            SELECT {', '.join(select_columns)}
+            FROM {PROMOTION_HOURLY_TABLE}
+            WHERE {' AND '.join(where)}
+            ORDER BY data_date, promotion_hour, product_id
+            LIMIT %s
+        """
         cur = conn.cursor()
         cur.execute(select_sql, params)
         source_rows = cur.fetchall()
@@ -1272,6 +1289,24 @@ def get_promotion_hourly(
             "netOrders": number("net_orders"),
             "directRevenue": number("direct_revenue"),
             "indirectRevenue": number("indirect_revenue"),
+            "directOrders": number("direct_orders"),
+            "indirectOrders": number("indirect_orders"),
+            "settledRevenue": number("settled_revenue"),
+            "settledRoi": number("settled_roi"),
+            "settledOrders": number("settled_orders"),
+            "refundExemptionRate": number("refund_exemption_rate"),
+            "cancelExemptionRate": number("cancel_exemption_rate"),
+            "settledAvgOrderSpend": number("avg_settled_order_spend"),
+            "revenueSettlementRate": number("revenue_settlement_rate"),
+            "orderSettlementRate": number("order_settlement_rate"),
+            "settledAvgOrderRevenue": number("avg_settled_order_revenue"),
+            "avgNetOrderSpend": number("avg_net_order_spend"),
+            "netRevenueRatio": number("net_revenue_ratio"),
+            "netOrdersRatio": number("net_orders_ratio"),
+            "avgNetOrderRevenue": number("avg_net_order_revenue"),
+            "avgOrderSpend": number("avg_order_spend"),
+            "avgOrderRevenue": number("avg_order_revenue"),
+            "sitePromotionRatio": number("site_promotion_ratio"),
             "sourceFile": str(item.get("source_file") or ""),
         })
     date_range = [rows[0]["date"], rows[-1]["date"]] if rows else [start or None, end or None]
@@ -1835,6 +1870,9 @@ def _apply_link_json_filters(where, params, raw_filters, field_types, deferred_n
             elif op == 'lte':
                 where.append(f"{column} <= %s")
                 params.append(v1)
+            elif op in ('equals', 'eq'):
+                where.append(f"{column} = %s")
+                params.append(v1)
             else:
                 if v1:
                     where.append(f"{column} >= %s")
@@ -1852,7 +1890,9 @@ def _apply_link_json_filters(where, params, raw_filters, field_types, deferred_n
         if deferred_numeric_filters is not None:
             deferred_numeric_filters.append({'field': field, 'op': op, 'v1': n1, 'v2': n2})
             continue
-        if op == 'gte' and n1 is not None:
+        if op in ('equals', 'eq') and n1 is not None:
+            _add_range(where, params, field, n1, n1)
+        elif op == 'gte' and n1 is not None:
             _add_range(where, params, field, n1, None)
         elif op == 'lte' and n1 is not None:
             _add_range(where, params, field, None, n1)
@@ -1922,6 +1962,8 @@ def _matches_aggregated_numeric_filters(item, filters):
         op = item_filter.get('op')
         v1 = item_filter.get('v1')
         v2 = item_filter.get('v2')
+        if op in ('equals', 'eq') and v1 is not None and actual != v1:
+            return False
         if op == 'gte' and v1 is not None and actual < v1:
             return False
         if op == 'lte' and v1 is not None and actual > v1:
@@ -2283,9 +2325,12 @@ def get_link_operating_summary(
     brand: str = Query(default=None),
     store_name: str = Query(default=None),
     store_person: str = Query(default=None),
+    orders_gte: float = Query(default=None),
+    orders_lte: float = Query(default=None),
     creation_days: int = Query(default=None, ge=1, le=3650),
     creation_start: str = Query(default=None),
     creation_end: str = Query(default=None),
+    filter_json: str = Query(default=""),
     sort_by: str = Query(default="orderAmount"),
     sort_order: str = Query(default="desc"),
 ):
@@ -2589,6 +2634,13 @@ def get_link_operating_summary(
             }
             rows.append(row)
 
+        if orders_gte is not None or orders_lte is not None:
+            rows = [
+                item for item in rows
+                if (orders_gte is None or _operating_number(item.get("profitOrders")) >= orders_gte)
+                and (orders_lte is None or _operating_number(item.get("profitOrders")) <= orders_lte)
+            ]
+
         sort_key_map = {
             "linkId": "linkId", "orderAmount": "orderAmount", "revenue": "orderAmount", "profitRate": "profitRate",
             "promotionSpend": "promotionSpend", "spend": "promotionSpend", "promotionRevenue": "promotionRevenue",
@@ -2662,9 +2714,12 @@ def get_link_summary(
     brand: str = Query(default=None),
     store_name: str = Query(default=None),
     store_person: str = Query(default=None),
+    orders_gte: float = Query(default=None),
+    orders_lte: float = Query(default=None),
     creation_days: int = Query(default=None, ge=1, le=3650),
     creation_start: str = Query(default=None),
     creation_end: str = Query(default=None),
+    filter_json: str = Query(default=""),
     sort_by: str = Query(default="revenue"),
     sort_order: str = Query(default="desc"),
 ):
@@ -2703,6 +2758,8 @@ def get_link_summary(
             where.append("`负责人` = %s")
             params.append(store_person)
         _append_creation_filter(where, params, creation_days, creation_start, creation_end, f"{TABLE_NAME}.`链接id`", conn)
+        _add_range(where, params, "单量", orders_gte, orders_lte)
+        _apply_link_json_filters(where, params, filter_json, _link_schema(conn.cursor()))
         where_clause = " AND ".join(where)
 
         cur = conn.cursor()
@@ -2849,9 +2906,12 @@ def get_link_dashboard(
     product_name: str = Query(default=None),
     brand: str = Query(default=None),
     store_name: str = Query(default=None),
+    orders_gte: float = Query(default=None),
+    orders_lte: float = Query(default=None),
     creation_days: int = Query(default=None, ge=1, le=3650),
     creation_start: str = Query(default=None),
     creation_end: str = Query(default=None),
+    filter_json: str = Query(default=""),
 ):
     """返回链接明细看板所需的透视数据和连续亏损预警。
 
@@ -2892,6 +2952,8 @@ def get_link_dashboard(
             where.append("`店铺名称` LIKE %s")
             params.append(f"%{store_name}%")
         _append_creation_filter(where, params, creation_days, creation_start, creation_end, f"{TABLE_NAME}.`链接id`", conn)
+        _add_range(where, params, "单量", orders_gte, orders_lte)
+        _apply_link_json_filters(where, params, filter_json, _link_schema(conn.cursor()))
         where_clause = " AND ".join(where)
 
         cur = conn.cursor()

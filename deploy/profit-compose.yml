@@ -1,8 +1,11 @@
+name: pdd-profit
+
 services:
   api:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.api
+    image: pdd-profit-api:latest
     container_name: pdd-profit-api
     restart: unless-stopped
     env_file:
