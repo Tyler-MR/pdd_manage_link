@@ -51,7 +51,7 @@
               <span class="range-field-hint">筛选字段：数据日期</span>
             </div>
             <div class="filter-controls" aria-label="维度筛选">
-              <label>链接 ID <input v-model="globalFilters.link_ids" placeholder="支持逗号分隔" /></label>
+              <label>链接 ID <input v-model="globalFilters.link_ids" placeholder="支持逗号或空格分隔" /></label>
               <label>商品编码 <input v-model="globalFilters.product_code" placeholder="如 FG2" /></label>
               <label>单量 <input v-model="globalFilters.orders" type="number" min="0" step="1" inputmode="numeric" placeholder="请输入单量" title="按当前日期范围汇总后的单量精确筛选" /></label>
               <label>品牌 <select v-model="globalFilters.brand"><option value="">全部品牌</option><option v-for="brand in brandOptions" :key="brand" :value="brand">{{ brand }}</option></select></label>
@@ -707,6 +707,9 @@ const operationQueueError = ref('');
 const operationCancellingId = ref('');
 const operationInterruptConfirmId = ref('');
 let operationQueueTimer = null;
+const platformIdentity = reactive({ userId: '', userName: '' });
+const platformOrigin = String(import.meta.env.VITE_PLATFORM_ORIGIN || 'https://dashboard.tyler-personnal.top').replace(/\/$/, '');
+let platformIdentityRequestTimer = null;
 const showPersonLines = ref(false);
 const focusedProfitRateSeries = ref(null);
 const focusedProductProfitSeries = ref(null);
@@ -739,6 +742,44 @@ const minimumScheduleDateTime = computed(() => {
   const pad = (value) => String(value).padStart(2, '0');
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
 });
+
+function handlePlatformIdentityMessage(event) {
+  // 只接受数据中台父页面发送的身份，避免其他页面伪造 postMessage 覆盖操作人。
+  if (event.source !== window.parent || event.origin !== platformOrigin) return;
+  const message = event.data;
+  if (!message || message.type !== 'data-platform:identity') return;
+
+  platformIdentity.userId = String(message.userId || '').trim();
+  platformIdentity.userName = String(message.userName || '').trim();
+}
+
+function requestPlatformIdentity() {
+  if (window.parent === window) return;
+  window.parent.postMessage({ type: 'data-platform:identity-request' }, platformOrigin);
+}
+
+function isEmbeddedInDataPlatform() {
+  if (window.parent === window || !document.referrer) return false;
+  try {
+    return new URL(document.referrer).origin === platformOrigin;
+  } catch {
+    return false;
+  }
+}
+
+function currentOperationIdentity() {
+  const userId = platformIdentity.userId.trim();
+  const userName = platformIdentity.userName.trim();
+  if (isEmbeddedInDataPlatform() && (!userId || !userName)) {
+    throw new Error('尚未获取数据中台钉钉身份，请刷新中台页面后重试');
+  }
+  return {
+    operator: userName || '链接监控',
+    operator_id: userId || null,
+    dingtalk_userid: userId || null,
+    dingtalk_username: userName || null,
+  };
+}
 const promotionDatePresets = Object.freeze([{ key: 'today', label: '今日' }, { key: 'yesterday', label: '昨日' }, { key: '7d', label: '近 7 日' }, { key: '30d', label: '近 30 日' }, { key: '90d', label: '近 90 日' }]);
 const promotionDatePreset = ref('30d');
 const promotionFilters = reactive({ start: '', end: '', search: '', status: '', bidType: '', stage: '', brand: '' });
@@ -3207,7 +3248,7 @@ async function submitSelectedLinks() {
       link_ids: linkIds,
       store_names: [...new Set(selectedDelistLinkRows.value.map((item) => item.storeName).filter(Boolean))],
       ...schedule.payload,
-      operator: '链接监控',
+      ...currentOperationIdentity(),
     });
     if (!response?.success) throw new Error(response?.error || '产品下架提交失败');
     delistConfirmOpen.value = false;
@@ -3333,7 +3374,7 @@ async function submitPromotionAdjust() {
       ...schedule.payload,
       direction: 'up',
       value,
-      operator: '链接监控',
+      ...currentOperationIdentity(),
     });
     if (!response?.success) throw new Error(response?.error || '调整投产提交失败');
     adjustModalOpen.value = false;
@@ -3389,8 +3430,16 @@ watch(activeTab, (tab) => {
   if (tab === 'admin') startOperationQueuePolling();
   else stopOperationQueuePolling();
 });
-onBeforeUnmount(stopOperationQueuePolling);
+onBeforeUnmount(() => {
+  stopOperationQueuePolling();
+  window.removeEventListener('message', handlePlatformIdentityMessage);
+  if (platformIdentityRequestTimer) window.clearTimeout(platformIdentityRequestTimer);
+});
 onMounted(async () => {
+  window.addEventListener('message', handlePlatformIdentityMessage);
+  requestPlatformIdentity();
+  // 父页面的 iframe load 监听稍晚于子页面 mounted，延迟重试可消除首次加载竞态。
+  platformIdentityRequestTimer = window.setTimeout(requestPlatformIdentity, 500);
   try {
     const savedColumns = JSON.parse(localStorage.getItem('link-monitor-promotion-columns-template') || 'null');
     if (Array.isArray(savedColumns) && savedColumns.length) promotionVisibleColumns.value = savedColumns.filter((key) => promotionColumns.some((column) => column.key === key));

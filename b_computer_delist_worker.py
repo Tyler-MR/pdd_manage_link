@@ -38,6 +38,7 @@ import requests
 
 
 DEFAULT_API_BASE = "https://link-management.tyler-personnal.top"
+WORKER_VERSION = "2026-08-18.identity-xlsx-v4"
 API_BASE = (
     os.getenv("LINK_MANAGEMENT_API_BASE")
     or os.getenv("PROFIT_API_BASE")
@@ -198,18 +199,62 @@ def _operation_label(task, task_type):
     return str(task.get("operation_label") or f"{meta['label']} {meta['display']}")
 
 
+def _task_identity_value(task, *keys):
+    """按兼容字段顺序读取身份，保证旧版任务也能写入新 Excel 列。"""
+    for key in keys:
+        value = str(task.get(key) or "").strip()
+        if value:
+            return value
+
+    # 兼容部分旧接口把身份放在 identity/user/operator_info 子对象中的情况。
+    for container_key in ("identity", "user", "operator_info"):
+        container = task.get(container_key)
+        if not isinstance(container, dict):
+            continue
+        for key in keys:
+            value = str(container.get(key) or "").strip()
+            if value:
+                return value
+    return ""
+
+
 def write_task_files(task):
     """生成统一 Excel 和触发文件，返回触发文件路径。"""
     task_id = str(task.get("id", "")).strip()
     task_type = _task_type(task)
     link_ids = [str(item).strip() for item in _safe_list(task.get("link_ids"))]
     store_names = [str(item).strip() for item in _safe_list(task.get("store_names"))]
-    operator = str(task.get("operator", ""))
-    dingtalk_userid = str(task.get("dingtalk_userid") or "")
-    dingtalk_username = str(task.get("dingtalk_username") or "")
+    dingtalk_userid = _task_identity_value(
+        task, "operator_id", "dingtalk_userid", "dingtalk_user_id", "dingding_userid", "userid", "userId"
+    )
+    dingtalk_username = _task_identity_value(
+        task, "dingtalk_username", "dingtalk_user_name", "dingding_username", "username", "name"
+    )
+    operator = str(task.get("operator") or dingtalk_username).strip()
+    if (
+        not dingtalk_username
+        and dingtalk_userid
+        and operator
+        and operator not in {"链接监控", "数据中台", "系统", "管理员"}
+    ):
+        # 兼容已经入队的旧任务：旧接口曾把真实姓名只写入 operator。
+        dingtalk_username = operator
     created_at = str(task.get("created_at", ""))
     operation_name = OPERATION_NAMES[task_type]
     operation_label = _operation_label(task, task_type)
+
+    # 身份为空时不能静默处理，否则 Excel 虽然有列名但会产生无法追溯的空值。
+    # 打印原始相关字段名，便于确认是中台没有注入，还是 B 电脑运行了旧脚本。
+    if not dingtalk_userid or not dingtalk_username:
+        identity_keys = sorted(
+            key for key in task.keys()
+            if any(token in str(key).lower() for token in ("ding", "user", "operator"))
+        )
+        print(
+            f"[{now_text()}] 身份字段为空：task_id={task_id or '<empty>'}，"
+            f"operator={operator!r}，dingtalk_userid={dingtalk_userid!r}，"
+            f"dingtalk_username={dingtalk_username!r}，相关字段={identity_keys}"
+        )
 
     if not task_id or not link_ids:
         print(f"[{now_text()}] 跳过无效任务：{task_id or '<empty>'}")
@@ -238,6 +283,10 @@ def write_task_files(task):
             rows.append([task_id, task_type, link_id, store_name, operator, dingtalk_userid, dingtalk_username, created_at, "待处理", operation_name])
         flow_name = "店大人批量下架操作"
 
+    # 保留原有中文列，同时追加稳定的英文键名，方便影刀/RPA按字段名读取。
+    headers.extend(["dingtalk_userid", "dingtalk_username"])
+    rows = [row + [dingtalk_userid, dingtalk_username] for row in rows]
+
     try:
         from openpyxl import Workbook
 
@@ -247,7 +296,8 @@ def write_task_files(task):
         sheet.append(headers)
         for row in rows:
             sheet.append(row)
-        for index, width in enumerate([18, 22, 18, 30, 14, 24, 20, 22, 14, 14, 10, 16, 16, 16], 1):
+        column_widths = [18, 22, 18, 30, 14, 24, 20, 22, 14, 14, 10, 16, 16, 16, 24, 20]
+        for index, width in enumerate(column_widths[:len(headers)], 1):
             sheet.column_dimensions[sheet.cell(1, index).column_letter].width = width
         workbook.save(WORKBOOK_FILE)
     except ImportError:
@@ -301,6 +351,7 @@ def write_task_files(task):
 
 
 def main():
+    print(f"  worker version: {WORKER_VERSION}")
     print("=" * 64)
     print("  B 电脑统一操作任务监听服务")
     print("  支持：产品下架 + 调整投产 | 单队列 FIFO | 同时只执行 1 个任务")

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import unquote
 
 import pandas as pd
 import numpy as np
@@ -870,6 +871,19 @@ def normalize_join_id_value(value):
     return None if text.lower() in {"", "-", "nan", "none", "nat", "<na>"} else text
 
 
+def parse_link_id_list(value):
+    """解析多个链接 ID，兼容逗号、中文逗号、空格、换行和混合分隔。"""
+    if value is None:
+        return []
+    text = str(value).replace("，", ",").replace("；", " ").replace(";", " ")
+    parsed = []
+    for item in re.split(r"[\s,]+", text.strip()):
+        normalized = normalize_join_id_value(item)
+        if normalized:
+            parsed.append(normalized)
+    return parsed
+
+
 def ensure_promotion_columns(conn):
     """为现有主表补充推广字段；已存在字段不会被改写。"""
     cur = conn.cursor()
@@ -1151,13 +1165,12 @@ def get_data(
     """从 MySQL 读取数据并聚合，返回看板所需 JSON。
 
     筛选条件在数据库层执行，保证所有 Vue 看板使用同一份过滤后的数据。
-    link_ids 支持逗号分隔的多个链接 ID。
+    link_ids 支持逗号、空格或混合分隔的多个链接 ID。
     """
     where = []
     params = []
     if link_ids:
-        ids = [normalize_join_id_value(item) for item in link_ids.split(",") if item.strip()]
-        ids = [item for item in ids if item]
+        ids = parse_link_id_list(link_ids)
         if ids:
             placeholders = ",".join(["%s"] * len(ids))
             where.append(f"`链接id` IN ({placeholders})")
@@ -1216,8 +1229,7 @@ def get_promotion_summary(
     """Aggregate only real promotion facts from the MySQL daily table."""
     where = ["1=1", "(is_deleted IS NULL OR LOWER(CAST(is_deleted AS CHAR)) NOT IN ('1', 'true', 'yes', '是'))"]
     params = []
-    id_values = [normalize_join_id_value(value) for value in str(product_id or "").replace("，", ",").split(",") if value.strip()]
-    id_values = [value for value in id_values if value]
+    id_values = parse_link_id_list(product_id)
     if id_values:
         where.append("product_id IN (" + ",".join(["%s"] * len(id_values)) + ")")
         params.extend(id_values)
@@ -1638,6 +1650,10 @@ def _normalise_task(task, task_type):
         "dingtalk_username",
         item.get("dingtalk_user_name") or item.get("ding_username") or item.get("username") or item.get("name"),
     )
+    item.setdefault(
+        "operator_id",
+        item.get("dingtalk_userid") or item.get("dingtalk_user_id") or item.get("ding_userid") or item.get("userId") or item.get("userid"),
+    )
     if not item.get("operator") and item.get("dingtalk_username"):
         item["operator"] = item["dingtalk_username"]
     item.setdefault("task_type", task_type)
@@ -1834,6 +1850,34 @@ def _create_operation_task(task_type, data):
     if schedule_error:
         return None, JSONResponse({"error": schedule_error}, status_code=400)
 
+    operator_name = str(
+        data.get("operator") or data.get("dingtalk_username") or ""
+    ).strip()
+    dingtalk_userid = str(
+        data.get("dingtalk_userid")
+        or data.get("dingtalk_user_id")
+        or data.get("ding_userid")
+        or data.get("userId")
+        or data.get("userid")
+        or ""
+    ).strip() or None
+    dingtalk_username = str(
+        data.get("dingtalk_username")
+        or data.get("dingtalk_user_name")
+        or data.get("ding_username")
+        or data.get("username")
+        or data.get("name")
+        or ""
+    ).strip() or None
+    if (
+        not dingtalk_username
+        and dingtalk_userid
+        and operator_name
+        and operator_name not in {"链接监控", "数据中台", "系统", "管理员"}
+    ):
+        # 兼容旧版中台只传 operator、未传 dingtalk_username 的已登录请求。
+        dingtalk_username = operator_name
+
     task = {
         "id": uuid.uuid4().hex[:12],
         "task_type": task_type,
@@ -1845,23 +1889,10 @@ def _create_operation_task(task_type, data):
         "count": len(link_ids),
         "store_names": store_names,
         "store_count": len([name for name in store_names if name]),
-        "operator": str(data.get("operator") or data.get("dingtalk_username") or "").strip(),
-        "dingtalk_userid": str(
-            data.get("dingtalk_userid")
-            or data.get("dingtalk_user_id")
-            or data.get("ding_userid")
-            or data.get("userId")
-            or data.get("userid")
-            or ""
-        ).strip() or None,
-        "dingtalk_username": str(
-            data.get("dingtalk_username")
-            or data.get("dingtalk_user_name")
-            or data.get("ding_username")
-            or data.get("username")
-            or data.get("name")
-            or ""
-        ).strip() or None,
+        "operator": operator_name or dingtalk_username or "",
+        "operator_id": dingtalk_userid,
+        "dingtalk_userid": dingtalk_userid,
+        "dingtalk_username": dingtalk_username,
         "schedule_mode": schedule_mode,
         "scheduled_at": scheduled_at,
         "status": "pending",
@@ -1885,10 +1916,47 @@ def _create_operation_task(task_type, data):
     return task, None
 
 
+def _request_identity(request: Request):
+    """读取中台代理转发的钉钉身份请求头。
+
+    中台会把身份同时放入请求头和 JSON 请求体。请求头由服务端生成，
+    因此作为后端的兜底身份来源，避免旧版前端继续发送固定 operator 时丢失真实用户。
+    """
+    user_id = (
+        request.headers.get("x-dingtalk-userid")
+        or request.headers.get("x-data-platform-userid")
+        or ""
+    ).strip()
+    user_name = (
+        request.headers.get("x-dingtalk-username")
+        or request.headers.get("x-data-platform-username")
+        or ""
+    ).strip()
+    if user_name:
+        user_name = unquote(user_name).strip()
+    return user_id, user_name
+
+
+def _merge_request_identity(data, request: Request):
+    """将服务端转发的身份写入任务请求体，供统一任务创建逻辑使用。"""
+    user_id, user_name = _request_identity(request)
+    if not user_id and not user_name:
+        return data
+
+    merged = dict(data)
+    if user_id:
+        merged["dingtalk_userid"] = user_id
+        merged["operator_id"] = user_id
+    if user_name:
+        merged["dingtalk_username"] = user_name
+        merged["operator"] = user_name
+    return merged
+
+
 @app.post("/api/operation")
 async def operation_submit(request: Request):
     """统一提交入口；task_type 为 delist 或 promotion_adjust。"""
-    data = await request.json()
+    data = _merge_request_identity(await request.json(), request)
     task_type = str(data.get("task_type", data.get("operation_type", data.get("operation", "")))).strip().lower()
     if task_type not in {"delist", "promotion_adjust"}:
         return JSONResponse({"error": "task_type 必须是 delist 或 promotion_adjust"}, status_code=400)
@@ -1936,7 +2004,8 @@ async def operation_history():
 
 @app.post("/api/delist")
 async def delist_submit(request: Request):
-    task, error = _create_operation_task("delist", await request.json())
+    data = _merge_request_identity(await request.json(), request)
+    task, error = _create_operation_task("delist", data)
     if error:
         return error
     return {"success": True, "task": task}
@@ -1963,7 +2032,8 @@ async def delist_history():
 
 @app.post("/api/promotion-adjust")
 async def promotion_adjust_submit(request: Request):
-    task, error = _create_operation_task("promotion_adjust", await request.json())
+    data = _merge_request_identity(await request.json(), request)
+    task, error = _create_operation_task("promotion_adjust", data)
     if error:
         return error
     return {"success": True, "task": task}
@@ -2139,7 +2209,7 @@ def _apply_link_json_filters(where, params, raw_filters, field_types, deferred_n
             continue
 
         if field in ('链接id', '链接 ID'):
-            link_id_values = [re.sub(r'\.0$', '', value.strip()) for value in v1.split(',') if value.strip()]
+            link_id_values = parse_link_id_list(v1)
             if link_id_values:
                 placeholders = ', '.join(['%s'] * len(link_id_values))
                 where.append(f"`链接id` IN ({placeholders})")
@@ -2409,7 +2479,7 @@ def get_links(
             like = f"%{search}%"
             params.extend([like, like, like, like])
         if link_ids:
-            ids = [x.strip() for x in link_ids.split(",") if x.strip()]
+            ids = parse_link_id_list(link_ids)
             if ids:
                 placeholders = ",".join(["%s"] * len(ids))
                 where.append(f"链接id IN ({placeholders})")
@@ -2663,7 +2733,7 @@ def get_link_operating_summary(
         # 否则“已下架”但仍有利润/推广事实的链接会在主表 SQL 阶段被提前过滤掉。
         info_where = ["`链接ID` IS NOT NULL", "`链接ID` <> ''"]
         info_params = []
-        requested_ids = [normalize_join_id_value(item) for item in str(link_ids or "").replace("，", ",").split(",") if item.strip()]
+        requested_ids = parse_link_id_list(link_ids)
         requested_ids = [item for item in requested_ids if item]
         creation_start_value, creation_end_value = _creation_window(creation_days, creation_start, creation_end)
 
@@ -3111,7 +3181,7 @@ def get_link_summary(
             where.append("`数据日期` <= %s")
             params.append(end)
         if link_ids:
-            ids = [item.strip() for item in link_ids.split(",") if item.strip()]
+            ids = parse_link_id_list(link_ids)
             if ids:
                 placeholders = ",".join(["%s"] * len(ids))
                 where.append(f"`链接id` IN ({placeholders})")
@@ -3308,7 +3378,7 @@ def get_link_dashboard(
             where.append("`负责人` = %s")
             params.append(store_person)
         if link_ids:
-            ids = [item.strip() for item in link_ids.split(",") if item.strip()]
+            ids = parse_link_id_list(link_ids)
             if ids:
                 placeholders = ",".join(["%s"] * len(ids))
                 where.append(f"`链接id` IN ({placeholders})")
