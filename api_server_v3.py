@@ -30,7 +30,7 @@ except ImportError:
 
 # ============ 配置 ============
 NETWORK_BASE = Path(os.getenv("PROFIT_NETWORK_BASE", r"\\192.168.16.34\d\财务\2026年\拼多多链接利润率\日利润率"))
-PROMOTION_BASE = Path(os.getenv("PROFIT_PROMOTION_BASE", r"\\192.168.16.32\Users\bot\Desktop\A.影刀\拼多多\小时平台推广"))
+PROMOTION_BASE = Path(os.getenv("PROFIT_PROMOTION_BASE", r"\\192.168.16.26\Users\Financial\Desktop\A.影刀\拼多多\平台推广"))
 LINK_INFO_BASE = Path(os.getenv("PROFIT_LINK_INFO_BASE", r"\\192.168.16.26\Users\Financial\Desktop\A.影刀\拼多多\链接信息"))
 LOCAL_CACHE = Path(os.getenv("PROFIT_LOCAL_CACHE", str(Path(__file__).with_name("cache_v3_etl"))))
 MYSQL_CFG = {
@@ -43,16 +43,37 @@ MYSQL_CFG = {
 }
 TABLE_NAME = "pdd_web_profit_data"
 LINK_INFO_TABLE = os.getenv("PROFIT_LINK_INFO_TABLE", "pdd_link_info")
-PROMOTION_HOURLY_TABLE = os.getenv("PROFIT_PROMOTION_HOURLY_TABLE", "pdd_web_promotion_hourly")
+PROMOTION_DAILY_TABLE = os.getenv(
+    "PROFIT_PROMOTION_DAILY_TABLE",
+    os.getenv("PROFIT_PROMOTION_HOURLY_TABLE", "pdd_web_promotion_daily"),
+)
+# 兼容现有 API 查询代码；实际指向新的日粒度推广事实表。
+PROMOTION_HOURLY_TABLE = PROMOTION_DAILY_TABLE
 API_PORT = int(os.getenv("PROFIT_API_PORT", "8090"))
 ETL_INTERVAL = 3600  # 每小时
+PROFIT_DATA_START_DATE = os.getenv("PROFIT_DATA_START_DATE", "2026-06-01")
 
-# 推广源文件结构：推广根目录 / 店铺名称 / 每日 xlsx。
-# 每个文件只读取名称以“商品_分小时数据”开头的 sheet。
-PROMOTION_SHEET_PREFIX = "商品_分小时数据"
+# 利润率事实表的固定字段白名单。
+# id 由 MySQL 自增生成；其余字段全部来自利润率源文件或 ETL 补充字段。
+PROFIT_TABLE_COLUMNS = [
+    "店铺名称", "负责人", "商品标题", "链接id", "商品编码", "单量", "收入", "成本", "成本占比",
+    "快递", "快递占比", "成本+快递", "货品快递总和占比", "毛利", "毛利率", "技术服务费", "预估售后",
+    "推广费", "推广费占比", "运费险", "税费", "平台利润", "利润率", "数据日期", "来源文件",
+]
+PROFIT_TEXT_COLUMNS = {"店铺名称", "负责人", "商品标题", "链接id", "商品编码", "来源文件"}
+PROFIT_NUMERIC_COLUMNS = {
+    "单量", "收入", "成本", "成本占比", "快递", "快递占比", "成本+快递", "货品快递总和占比",
+    "毛利", "毛利率", "技术服务费", "预估售后", "推广费", "推广费占比", "运费险", "税费", "平台利润", "利润率",
+}
 
-# 原始推广明细的自然粒度是“店铺 + 商品ID + 日期 + 小时”。
-# 这些字段在写入现有利润主表时会按“店铺 + 商品ID + 日期”汇总，
+# 推广源文件结构：推广根目录 / 下载日期+店铺名称.xlsx。
+# 每个文件只读取名称以“商品_分天数据”开头的 sheet；sheet 内“日期”才是业务数据日期。
+PROMOTION_SHEET_PREFIX = "商品_分天数据"
+
+# 原始推广明细的自然粒度是“店铺 + 商品ID + 日期”。
+# 同一下载文件中若同商品存在多条推广记录，会先按“店铺 + 商品ID + 日期”汇总，
+# 同一业务日期被多次下载时，以文件名中下载日期较新的快照为准。
+# 这些字段在写入现有利润主表时按“店铺 + 商品ID + 日期”关联，
 # 不覆盖主表已有的收入、利润和推广费字段。
 PROMOTION_STRING_COLUMNS = [
     "出价方式", "商品名称", "推广场景", "推广名称", "分组", "是否已删除",
@@ -113,16 +134,25 @@ def safe_copy(remote, local_dir):
     return local_path
 
 def list_xlsx_files():
-    """递归扫描利润率根目录下各月份文件夹中的 xlsx 文件。"""
+    """递归扫描利润率根目录，限制为 2026-06-01 至今天的文件。"""
     base = Path(NETWORK_BASE)
     if not base.is_dir():
         print(f"  ⚠ 利润率目录不存在或不可访问: {base}")
         return []
 
+    start_date = pd.to_datetime(PROFIT_DATA_START_DATE, errors="coerce")
+    end_date = pd.Timestamp.today().normalize()
+    if pd.isna(start_date):
+        raise ValueError(f"PROFIT_DATA_START_DATE 无效: {PROFIT_DATA_START_DATE}")
+
     files = []
     for month_dir in sorted((path for path in base.iterdir() if path.is_dir()), key=lambda path: path.name):
         for path in sorted(month_dir.glob("*.xlsx"), key=lambda item: item.name):
             if path.name.startswith("~$") or "拼多多链接利润率" not in path.name:
+                continue
+            file_date = extract_date_from_filename(path.name)
+            parsed_date = pd.to_datetime(file_date, errors="coerce") if file_date else pd.NaT
+            if pd.isna(parsed_date) or parsed_date < start_date or parsed_date > end_date:
                 continue
             files.append((month_dir.name, path))
     return files
@@ -150,17 +180,106 @@ def extract_link_info_file_date(filepath):
     return None if pd.isna(value) else value.strftime("%Y-%m-%d")
 
 
-def _normalise_link_info_columns(df):
-    """统一链接信息工作簿中的链接 ID 列名，保留原始字段。"""
+def _link_info_text(value):
+    """将 Excel 单元格安全转换为文本；空值统一为空字符串。"""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return ""
+    text = str(value).replace("\xa0", " ").strip()
+    return "" if text.lower() in {"nan", "none", "nat"} else text
+
+
+def _link_info_first_line(value):
+    """读取单元格中的第一行非空文本。"""
+    for line in _link_info_text(value).splitlines():
+        if line.strip():
+            return line.strip()
+    return ""
+
+
+def _link_info_extract_title_id_code(value):
+    """解析推广平台导出文本中的链接标题、链接 ID 和商品编码。
+
+    当前链接信息文件没有表头，第二列是一个多行文本单元格，例如：
+    商品标题\\nID: 986582932588\\n商品编码: NU1\\n...
+    """
+    text = _link_info_text(value)
+    # 导出文本中的 ID 可能带 Excel 前置单引号或额外空格，先允许这些字符再提取主体。
+    id_match = re.search(
+        r"(?:链接ID|链接\s*ID|商品ID|商品\s*ID|ID)\s*[:：]?\s*['’\s]*([0-9A-Za-z_-]+)",
+        text,
+        re.IGNORECASE,
+    )
+    code_match = re.search(r"商品编码\s*[:：]?\s*([^\r\n]+)", text, re.IGNORECASE)
+    title = text.splitlines()[0].strip() if text else ""
+    link_id = normalize_join_id_value(id_match.group(1)) if id_match else None
+    product_code = code_match.group(1).strip() if code_match else ""
+    return title, link_id, product_code
+
+
+def _normalise_link_info_columns(df, sheet_name="", filepath=None):
+    """统一链接信息字段，并兼容标准表头和推广平台无表头导出格式。"""
+    if df is None or df.empty:
+        return None
+
     frame = df.copy()
     frame.columns = [str(column).strip() for column in frame.columns]
     frame = frame.loc[:, ~frame.columns.duplicated()]
-    aliases = {"链接id": "链接ID", "链接 ID": "链接ID", "链接Id": "链接ID", "链接ID": "链接ID"}
+    aliases = {
+        "链接id": "链接ID", "链接 ID": "链接ID", "链接Id": "链接ID", "链接ID": "链接ID",
+        "商品id": "链接ID", "商品 ID": "链接ID", "商品ID": "链接ID",
+        "链接主图": "图片链接", "主图": "图片链接", "图片链接": "图片链接",
+        "链接标题": "商品标题", "标题": "商品标题", "商品标题": "商品标题",
+        "链接创建时间": "创建时间", "创建时间": "创建时间",
+        "店铺": "店铺名称", "店铺名称": "店铺名称",
+        "商品编码": "商品编码", "货号": "商品编码",
+        "在售状态": "在售状态", "商品状态": "在售状态",
+    }
     frame = frame.rename(columns={column: aliases[column] for column in frame.columns if column in aliases})
-    if "链接ID" not in frame.columns:
+
+    # 标准化数据源已经带有链接ID列时，保留标准字段并补充店铺及状态。
+    if "链接ID" in frame.columns:
+        frame["链接ID"] = normalize_join_id(frame["链接ID"])
+        frame = frame[frame["链接ID"].notna()].copy()
+        if frame.empty:
+            return None
+        if "店铺名称" not in frame.columns:
+            frame["店铺名称"] = sheet_name
+        if "在售状态" not in frame.columns:
+            frame["在售状态"] = "在售"
+        for column in ["图片链接", "商品标题", "创建时间", "商品编码", "店铺名称", "在售状态"]:
+            if column not in frame.columns:
+                frame[column] = ""
+        return frame[["店铺名称", "图片链接", "商品标题", "链接ID", "商品编码", "创建时间", "在售状态"]].copy()
+
+    # 推广平台当前导出格式：第 0 列主图，第 1 列多行标题/ID/商品编码，第 8 列创建时间/销售状态。
+    if frame.shape[1] < 2:
         return None
-    frame["链接ID"] = normalize_join_id(frame["链接ID"])
-    return frame[frame["链接ID"].notna()].copy()
+    rows = []
+    for _, source_row in frame.iterrows():
+        values = source_row.tolist()
+        title, link_id, product_code = _link_info_extract_title_id_code(values[1] if len(values) > 1 else "")
+        if not link_id:
+            continue
+        created_raw = values[8] if len(values) > 8 else ""
+        created_lines = [line.strip() for line in _link_info_text(created_raw).splitlines() if line.strip()]
+        created_at = created_lines[0] if created_lines else ""
+        status_text = " ".join(created_lines[1:])
+        if "销售中" in status_text or not status_text:
+            sale_status = "在售"
+        elif "下架" in status_text:
+            sale_status = "已下架"
+        else:
+            sale_status = status_text[:50]
+        rows.append({
+            "店铺名称": _link_info_text(sheet_name),
+            "图片链接": _link_info_first_line(values[0] if values else ""),
+            "商品标题": title,
+            "链接ID": link_id,
+            "商品编码": product_code,
+            "创建时间": created_at,
+            "在售状态": sale_status,
+        })
+    return pd.DataFrame(rows) if rows else None
 
 
 def _link_info_frame_date(frame, filepath):
@@ -176,21 +295,34 @@ def _link_info_frame_date(frame, filepath):
 
 
 def load_link_info_data(folder_path=LINK_INFO_BASE):
-    """读取链接信息目录，按最新文件优先合并，并按链接ID保留第一条。"""
+    """读取最新日期的链接信息快照，并合并全部店铺 Sheet。
+
+    链接信息目录是“每日一个工作簿、每个 Sheet 一个店铺”的快照，
+    因此不能把历史文件与最新文件混合，否则已下架链接会被错误地当成在售。
+    """
     files = list_link_info_xlsx_files(folder_path)
-    stats = {"files_found": len(files), "files_processed": 0, "files_error": 0, "rows_before_dedup": 0, "rows_after_dedup": 0}
+    valid_dates = [extract_link_info_file_date(path) for path in files]
+    latest_date = max((value for value in valid_dates if value), default=None)
+    selected_files = [path for path in files if extract_link_info_file_date(path) == latest_date] if latest_date else files[:1]
+    stats = {
+        "files_found": len(files), "files_selected": len(selected_files), "files_processed": 0,
+        "files_error": 0, "sheets_processed": 0, "rows_before_dedup": 0,
+        "rows_after_dedup": 0, "latest_date": latest_date or "",
+    }
     frames = []
-    for filepath in files:
+    for filepath in selected_files:
         try:
             workbook = pd.ExcelFile(filepath)
             file_frames = []
             for sheet_name in workbook.sheet_names:
-                raw = pd.read_excel(workbook, sheet_name=sheet_name)
+                # header=None 是关键：当前导出 Sheet 首行为空，数据从第二行开始，且没有字段名行。
+                raw = pd.read_excel(workbook, sheet_name=sheet_name, header=None, dtype=object)
                 if raw is None or raw.empty:
                     continue
-                normalised = _normalise_link_info_columns(raw)
+                normalised = _normalise_link_info_columns(raw, sheet_name=sheet_name, filepath=filepath)
                 if normalised is not None and not normalised.empty:
                     file_frames.append(normalised)
+                    stats["sheets_processed"] += 1
             workbook.close()
             if file_frames:
                 frame = pd.concat(file_frames, ignore_index=True)
@@ -210,6 +342,11 @@ def load_link_info_data(folder_path=LINK_INFO_BASE):
     # 按文件数据日期倒序后，等价于 drop_duplicates(subset=['链接ID'], keep='first')。
     merged = merged.drop_duplicates(subset=["链接ID"], keep="first").reset_index(drop=True)
     merged = merged.drop(columns=["__source_file_mtime", "__source_data_date"], errors="ignore")
+    # 链接信息表只对外提供稳定的主表字段，避免把平台导出的操作列写入 MySQL。
+    for column in ["店铺名称", "图片链接", "商品标题", "链接ID", "商品编码", "创建时间", "在售状态"]:
+        if column not in merged.columns:
+            merged[column] = ""
+    merged = merged[["店铺名称", "图片链接", "商品标题", "链接ID", "商品编码", "创建时间", "在售状态"]]
     stats["rows_after_dedup"] = len(merged)
     return merged, stats
 
@@ -277,10 +414,13 @@ def clean_product_code(code):
     return code.split("-")[0].strip() or "暂无编码"
 
 def extract_date_from_filename(filename):
-    """从文件名提取日期：拼多多链接利润率2026-06-01.xlsx → 2026-06-01"""
+    """从文件名提取日期，兼容 YYYY-MM-DD、YYYY_MM_DD 和 YYYYMMDD。"""
     name = Path(filename).stem
-    m = re.search(r"(\d{4}-\d{2}-\d{2})", name)
-    return m.group(1) if m else None
+    m = re.search(r"(?<!\d)(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)(?!\d)", name)
+    if not m:
+        return None
+    parsed = pd.to_datetime("".join(m.groups()), format="%Y%m%d", errors="coerce")
+    return None if pd.isna(parsed) else parsed.strftime("%Y-%m-%d")
 
 def process_single_xlsx(month, filepath, cache_dir):
     """处理单个 xlsx 文件，返回清洗后的 DataFrame"""
@@ -332,12 +472,13 @@ def process_single_xlsx(month, filepath, cache_dir):
     # 标准化列名（去除空格）
     df.columns = [str(c).strip() for c in df.columns]
 
-    # 过滤：链接id 不为空
+    # 统一链接 ID 后再过滤，避免 Excel 中的前置单引号或空格导致主键匹配失败。
     if "链接id" not in df.columns:
         print(f"  ⚠ {filepath.name}: 缺少'链接id'列, cols={list(df.columns)[:10]}")
         return None
 
-    df = df[df["链接id"].notna() & (df["链接id"] != "")]
+    df["链接id"] = normalize_join_id(df["链接id"])
+    df = df[df["链接id"].notna()]
     if len(df) == 0:
         return None
 
@@ -349,7 +490,7 @@ def process_single_xlsx(month, filepath, cache_dir):
 
     # 数值列处理
     num_cols = ["单量", "收入", "成本", "快递", "成本+快递", "毛利",
-                "技术服务费(1%)", "预估售后", "推广费", "运费险", "税费", "平台利润",
+                "技术服务费(1%)", "技术服务费", "预估售后", "推广费", "运费险", "税费", "平台利润",
                 "30天销量", "收藏"]
     for col in num_cols:
         if col in df.columns:
@@ -372,43 +513,71 @@ def process_single_xlsx(month, filepath, cache_dir):
     if rename_map:
         df = df.rename(columns=rename_map)
 
-    # 保留需要的列
-    keep_cols = ["店铺名称", "负责人", "商品标题", "链接id", "商品编码",
-                 "单量", "收入", "成本", "成本占比", "快递", "快递占比",
-                 "成本+快递", "货品快递总和占比", "毛利", "毛利率",
-                 "技术服务费", "预估售后", "推广费", "推广费占比",
-                 "运费险", "税费", "平台利润", "利润率", "数据日期", "来源文件"]
-    available = [c for c in keep_cols if c in df.columns]
-    df = df[available].copy()
+    # 补齐白名单中不存在的字段，保证每次重建后的数据库结构稳定。
+    for col in PROFIT_TABLE_COLUMNS:
+        if col in df.columns:
+            continue
+        if col == "数据日期":
+            df[col] = file_date
+        elif col == "来源文件":
+            df[col] = filepath.name
+        elif col in PROFIT_TEXT_COLUMNS:
+            df[col] = ""
+        else:
+            df[col] = 0.0
+
+    for col in PROFIT_NUMERIC_COLUMNS:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    df = df[PROFIT_TABLE_COLUMNS].copy()
 
     return df
 
 
 def list_promotion_xlsx_files(folder_path=PROMOTION_BASE):
-    """列出“店铺文件夹/每日文件.xlsx”，忽略 Excel 临时文件。"""
+    """列出推广目录及 history 子目录中的日下载 xlsx，忽略 Excel 临时文件。
+
+    推广历史文件实际可能位于 ``平台推广/history`` 的下一层目录中，
+    因此不能只读取 history 的直属文件；递归扫描后仍由后续逻辑按
+    ``店铺 + 商品ID + 数据日期`` 及最新下载快照去重。
+    """
     folder = Path(folder_path)
     try:
         if not folder.is_dir():
             print(f"  ⚠ 推广目录不存在或不可访问: {folder}")
             return []
+        # 根目录保存最新快照，history 及其下级目录保存历史快照。
+        # 递归扫描是必要的，否则会漏掉 history 下按批次归档的文件。
+        start_date = pd.to_datetime(PROFIT_DATA_START_DATE, errors="coerce")
+        end_date = pd.Timestamp.today().normalize()
         files = []
-        for store_dir in folder.iterdir():
-            if not store_dir.is_dir():
+        for path in folder.rglob("*.xlsx"):
+            if not path.is_file() or path.name.startswith("~$"):
                 continue
-            files.extend(
-                p for p in store_dir.iterdir()
-                if p.is_file()
-                and p.suffix.lower() == ".xlsx"
-                and not p.name.startswith("~$")
-            )
-        return sorted(files, key=lambda p: (p.parent.name, p.name))
+            snapshot_date = pd.to_datetime(parse_promotion_file_date(path), errors="coerce")
+            # 旧历史文件使用不同报表结构，且不属于当前 6 月起数据范围；直接跳过，
+            # 避免无效读取和大量“未找到商品_分天数据”提示。
+            if pd.notna(start_date) and (pd.isna(snapshot_date) or snapshot_date < start_date):
+                continue
+            if pd.notna(end_date) and pd.notna(snapshot_date) and snapshot_date > end_date:
+                continue
+            files.append(path)
+        # 文件名以下载日期开头。按快照日期升序处理，后续去重时保留更新的下载快照。
+        return sorted(
+            files,
+            key=lambda path: (
+                parse_promotion_file_date(path) or "",
+                path.stat().st_mtime_ns,
+                str(path).lower(),
+            ),
+        )
     except OSError as e:
         print(f"  ⚠ 读取推广目录失败 {folder}: {e}")
         return []
 
 
 def parse_promotion_file_date(filepath):
-    """从每日推广文件名提取日期，兼容 20260712 和 2026-07-12 格式。"""
+    """从推广文件名开头提取下载快照日期，兼容 20260712 和 2026-07-12。"""
     date_matches = re.findall(r"(?<!\d)(20\d{2})[-_]?([01]\d)[-_]?([0-3]\d)(?!\d)", Path(filepath).stem)
     if not date_matches:
         return None
@@ -416,16 +585,30 @@ def parse_promotion_file_date(filepath):
     end_date = pd.to_datetime("".join(date_matches[-1]), format="%Y%m%d", errors="coerce")
     if pd.isna(start_date) or pd.isna(end_date):
         return None
-    if start_date.date() != end_date.date():
-        print(f"  ⚠ 推广文件不是单日范围，将使用起始日期: {Path(filepath).name}")
     return start_date.strftime("%Y-%m-%d")
 
 
+def parse_promotion_store_name(filepath):
+    """从“下载日期+店铺名称.xlsx”中提取店铺名称。"""
+    stem = Path(filepath).stem.strip()
+    match = re.match(r"^20\d{2}[-_]?\d{2}[-_]?\d{2}(?P<store>.+)$", stem)
+    if not match:
+        return ""
+    return match.group("store").strip(" _-")
+
+
 def normalize_join_id(values):
-    """统一商品 ID/链接 ID，避免 Excel 数值被读成带 .0 的字符串。"""
-    result = values.astype("string").str.strip()
+    """统一商品 ID/链接 ID，清除 Excel 常见的前置单引号、空白和 .0。"""
+    result = (
+        values.astype("string")
+        .str.replace("\ufeff", "", regex=False)
+        .str.replace("\u200b", "", regex=False)
+        .str.replace("\xa0", " ", regex=False)
+        .str.replace(r"^[\s'’]+", "", regex=True)
+        .str.strip()
+    )
     result = result.str.replace(r"\.0$", "", regex=True)
-    return result.mask(result.isin(["", "-", "nan", "None", "<NA>"]))
+    return result.mask(result.str.lower().isin(["", "-", "nan", "none", "nat", "<na>"]))
 
 
 def clean_percentage_value(value):
@@ -466,26 +649,39 @@ def calculate_promotion_metrics(df):
     df["净交易额占比"] = safe_divide_series(df["净交易额(元)"], df["交易额(元)"])
     df["实际投产比"] = safe_divide_series(df["交易额(元)"], df["总花费(元)"])
     df["净实际投产比"] = safe_divide_series(df["净交易额(元)"], df["总花费(元)"])
+    df["结算投产比"] = safe_divide_series(df["结算交易额(元)"], df["总花费(元)"])
     df["每笔净成交花费(元)"] = safe_divide_series(df["总花费(元)"], df["净成交笔数"])
     df["每笔成交花费(元)"] = safe_divide_series(df["总花费(元)"], df["成交笔数"])
     df["每笔成交金额(元)"] = safe_divide_series(df["交易额(元)"], df["成交笔数"])
+    df["每笔结算成交花费(元)"] = safe_divide_series(df["总花费(元)"], df["结算成交笔数"])
+    df["每笔结算成交金额(元)"] = safe_divide_series(df["结算交易额(元)"], df["结算成交笔数"])
     df["每笔直接成交金额(元)"] = safe_divide_series(df["直接交易额(元)"], df["直接成交笔数"])
     df["每笔间接成交金额(元)"] = safe_divide_series(df["间接交易额(元)"], df["间接成交笔数"])
+    df["净成交笔数占比"] = safe_divide_series(df["净成交笔数"], df["成交笔数"])
+    df["交易额结算率"] = safe_divide_series(df["结算交易额(元)"], df["交易额(元)"])
+    df["订单结算率"] = safe_divide_series(df["结算成交笔数"], df["成交笔数"])
     return df
 
 
 def process_single_promotion_xlsx(filepath):
-    """读取一个店铺每日工作簿中的商品分小时明细 sheet。"""
+    """读取一个日下载工作簿中的“商品_分天数据*”工作表。"""
     frames = []
     filepath = Path(filepath)
-    file_date = parse_promotion_file_date(filepath)
-    store_name = filepath.parent.name
-    if not file_date:
-        print(f"  ⚠ 无法从推广文件名提取日期: {filepath.name}")
+    snapshot_date = parse_promotion_file_date(filepath)
+    store_name = parse_promotion_store_name(filepath)
+    if not snapshot_date:
+        print(f"  ⚠ 无法从推广文件名提取下载日期: {filepath.name}")
+        return None
+    if not store_name:
+        print(f"  ⚠ 无法从推广文件名提取店铺名称: {filepath.name}")
         return None
     try:
         xls = pd.ExcelFile(filepath)
         sheet_names = [s for s in xls.sheet_names if str(s).startswith(PROMOTION_SHEET_PREFIX)]
+        if not sheet_names:
+            print(f"  ⚠ {filepath.name}: 未找到 {PROMOTION_SHEET_PREFIX}* 工作表")
+            xls.close()
+            return None
         for sheet_name in sheet_names:
             raw = pd.read_excel(xls, sheet_name=sheet_name, header=None)
             if raw is None or raw.empty or len(raw.index) < 2:
@@ -495,7 +691,6 @@ def process_single_promotion_xlsx(filepath):
             if not headers or "商品ID" not in headers:
                 print(f"  ⚠ {filepath.name}/{sheet_name}: 首行未找到商品ID字段")
                 continue
-            headers[0] = "推广小时"
             df = raw.iloc[1:].copy()
             df.columns = headers
             df = df.loc[:, [column for column in df.columns if column]]
@@ -504,19 +699,19 @@ def process_single_promotion_xlsx(filepath):
             if "总营销花费(元)" in df.columns and "总花费(元)" not in df.columns:
                 df = df.rename(columns={"总营销花费(元)": "总花费(元)"})
 
-            required = {"商品ID", "总花费(元)", "推广小时"}
+            required = {"日期", "商品ID", "总花费(元)"}
             missing = required.difference(df.columns)
             if missing:
                 print(f"  ⚠ {filepath.name}/{sheet_name}: 缺少字段 {sorted(missing)}")
                 continue
 
             df["商品ID"] = normalize_join_id(df["商品ID"])
-            df["日期"] = file_date
-            df["推广小时"] = df["推广小时"].astype("string").str.strip()
+            df["日期"] = pd.to_datetime(df["日期"], errors="coerce").dt.strftime("%Y-%m-%d")
+            # 保留兼容字段，明确标记该来源没有小时粒度。
+            df["推广小时"] = "全天"
             df = df[
                 df["商品ID"].notna()
-                & df["推广小时"].notna()
-                & df["推广小时"].ne("")
+                & df["日期"].notna()
                 & ~df["商品ID"].isin(["总计", "-"])
             ].copy()
             if df.empty:
@@ -551,36 +746,41 @@ def process_single_promotion_xlsx(filepath):
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
             df = calculate_promotion_metrics(df)
-            frames.append(df[["商品ID", "日期"] + PROMOTION_STRING_COLUMNS + PROMOTION_NUMERIC_COLUMNS])
+            df["__snapshot_date"] = snapshot_date
+            frames.append(df[["商品ID", "日期"] + PROMOTION_STRING_COLUMNS + PROMOTION_NUMERIC_COLUMNS + ["__snapshot_date"]])
         xls.close()
     except Exception as e:
         print(f"  ⚠ 读取推广文件失败 {filepath.name}: {e}")
         return None
 
     if not frames:
-        return None
+        return pd.DataFrame(columns=["商品ID", "日期"] + PROMOTION_STRING_COLUMNS + PROMOTION_NUMERIC_COLUMNS + ["__snapshot_date"])
     return pd.concat(frames, ignore_index=True)
 
 
 def load_promotion_data(file_filter=None):
-    """扫描店铺子目录，保留商品级分小时明细。"""
+    """扫描推广根目录，生成商品级日推广事实；重叠日期保留最新下载快照。"""
     files = list_promotion_xlsx_files()
     if file_filter:
         files = [filepath for filepath in files if file_filter(filepath)]
     stats = {
         "files_found": len(files),
         "files_processed": 0,
+        "files_empty": 0,
         "files_error": 0,
-        "hourly_rows_before_dedup": 0,
-        "hourly_rows_after_dedup": 0,
+        "daily_rows_before_dedup": 0,
+        "daily_rows_after_dedup": 0,
         "stores_found": 0,
     }
-    stats["stores_found"] = len({filepath.parent.name for filepath in files})
+    stats["stores_found"] = len({parse_promotion_store_name(filepath) for filepath in files if parse_promotion_store_name(filepath)})
     frames = []
     for filepath in files:
         result = process_single_promotion_xlsx(filepath)
-        if result is None or result.empty:
+        if result is None:
             stats["files_error"] += 1
+            continue
+        if result.empty:
+            stats["files_empty"] += 1
             continue
         frames.append(result)
         stats["files_processed"] += 1
@@ -589,17 +789,22 @@ def load_promotion_data(file_filter=None):
         return pd.DataFrame(columns=["商品ID", "日期"] + PROMOTION_STRING_COLUMNS + PROMOTION_NUMERIC_COLUMNS), stats
 
     promotion = pd.concat(frames, ignore_index=True)
-    stats["hourly_rows_before_dedup"] = len(promotion)
-    promotion = promotion.drop_duplicates(["store", "日期", "商品ID", "推广小时"], keep="last").reset_index(drop=True)
-    stats["hourly_rows_after_dedup"] = len(promotion)
+    stats["daily_rows_before_dedup"] = len(promotion)
+    business_keys = ["store", "日期", "商品ID"]
+    latest_snapshot = promotion.groupby(business_keys, dropna=False)["__snapshot_date"].transform("max")
+    promotion = promotion[promotion["__snapshot_date"].eq(latest_snapshot)].copy()
+    promotion = aggregate_promotion_daily(promotion.drop(columns=["__snapshot_date"])).reset_index(drop=True)
+    stats["daily_rows_after_dedup"] = len(promotion)
     # 保留旧统计键，兼容现有日志或管理端读取方。
-    stats["rows_before_dedup"] = stats["hourly_rows_before_dedup"]
-    stats["rows_after_dedup"] = stats["hourly_rows_after_dedup"]
+    stats["hourly_rows_before_dedup"] = stats["daily_rows_before_dedup"]
+    stats["hourly_rows_after_dedup"] = stats["daily_rows_after_dedup"]
+    stats["rows_before_dedup"] = stats["daily_rows_before_dedup"]
+    stats["rows_after_dedup"] = stats["daily_rows_after_dedup"]
     return promotion, stats
 
 
 def aggregate_promotion_daily(promotion_df):
-    """将分小时推广明细汇总为现有利润主表可关联的日粒度。"""
+    """将推广明细归并为店铺 + 商品ID + 日期粒度，并重算比例指标。"""
     if promotion_df is None or promotion_df.empty:
         return promotion_df
 
@@ -611,8 +816,10 @@ def aggregate_promotion_daily(promotion_df):
 
     aggregations = {column: "sum" for column in numeric_columns}
     aggregations.update({column: "first" for column in string_columns})
+    aggregations.update({column: "first" for column in PROMOTION_PERCENTAGE_COLUMNS if column in grouped.columns})
+    aggregations.update({column: "first" for column in PROMOTION_RATIO_COLUMNS if column in grouped.columns})
     daily = grouped.groupby(group_keys, as_index=False, dropna=False).agg(aggregations)
-    daily["推广小时"] = "全天汇总"
+    daily["推广小时"] = "全天"
     return calculate_promotion_metrics(daily)
 
 
@@ -654,12 +861,13 @@ def merge_promotion_data(main_df, promotion_df):
 
 
 def normalize_join_id_value(value):
-    """统一单个数据库键值，用于生成主表业务键集合。"""
+    """统一单个数据库键值，清除前置单引号、空白和 Excel 数值后缀。"""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return None
-    text = str(value).strip()
+    text = str(value).replace("\ufeff", "").replace("\u200b", "").replace("\xa0", " ")
+    text = re.sub(r"^[\s'’]+", "", text).strip()
     text = re.sub(r"\.0$", "", text)
-    return text or None
+    return None if text.lower() in {"", "-", "nan", "none", "nat", "<na>"} else text
 
 
 def ensure_promotion_columns(conn):
@@ -686,9 +894,9 @@ def ensure_promotion_columns(conn):
     return added
 
 
-def ensure_promotion_hourly_table(conn):
-    """Create the independent promotion fact table at date + hour grain."""
-    key_columns = {"product_id", "store_name", "promotion_hour"}
+def ensure_promotion_daily_table(conn):
+    """Create the independent promotion fact table at store + product + date grain."""
+    key_columns = {"product_id", "store_name"}
     string_columns = ["product_id", "store_name", "promotion_hour", "source_file", "bid_type", "product_name", "promotion_scene", "promotion_name", "group_name", "is_deleted"]
     numeric_columns = [column for column in PROMOTION_HOURLY_COLUMN_MAP.values() if column not in string_columns and column not in {"data_date"}]
     definitions = ["id BIGINT AUTO_INCREMENT PRIMARY KEY", "data_date DATE NOT NULL"]
@@ -699,7 +907,7 @@ def ensure_promotion_hourly_table(conn):
     for column in numeric_columns:
         definitions.append(f"`{column}` DOUBLE NULL")
     definitions.extend([
-        "UNIQUE KEY uk_promotion_hourly (store_name(100), product_id(64), data_date, promotion_hour(32))",
+        "UNIQUE KEY uk_promotion_daily (store_name(100), product_id(64), data_date)",
         "KEY idx_promotion_date (data_date)",
         "KEY idx_promotion_product (product_id(64))",
         "KEY idx_promotion_store_date (store_name(100), data_date)",
@@ -709,9 +917,9 @@ def ensure_promotion_hourly_table(conn):
     conn.commit()
 
 
-def replace_promotion_hourly_table(conn, promotion):
-    """Replace the independent hourly fact table with the latest source snapshot."""
-    ensure_promotion_hourly_table(conn)
+def replace_promotion_daily_table(conn, promotion):
+    """Replace the independent daily fact table with the latest source snapshot."""
+    ensure_promotion_daily_table(conn)
     cur = conn.cursor()
     cur.execute(f"TRUNCATE TABLE {PROMOTION_HOURLY_TABLE}")
     db_columns = list(dict.fromkeys(PROMOTION_HOURLY_COLUMN_MAP.values()))
@@ -736,7 +944,7 @@ def replace_promotion_hourly_table(conn, promotion):
 
 
 def run_promotion_backfill():
-    """只回填推广字段，不新增主表行，也不覆盖主表已有字段。"""
+    """刷新独立推广事实表，不再向利润率主表添加或回填推广字段。"""
     promotion, promotion_stats = load_promotion_data()
     if promotion.empty:
         return {
@@ -747,61 +955,14 @@ def run_promotion_backfill():
 
     conn = get_mysql()
     try:
-        hourly_rows = replace_promotion_hourly_table(conn, promotion)
-        added_columns = ensure_promotion_columns(conn)
-        cur = conn.cursor()
-        # 回填现有日粒度主表前，先把小时明细汇总到店铺 + 商品 + 日期。
-        promotion = aggregate_promotion_daily(promotion)
-        cur.execute(f"SELECT `链接id`, `店铺名称`, `数据日期` FROM {TABLE_NAME}")
-        main_keys = {
-            (normalize_join_id_value(link_id), str(store_name or "").strip(), str(data_date))
-            for link_id, store_name, data_date in cur.fetchall()
-            if normalize_join_id_value(link_id) and data_date is not None
-        }
-
-        promotion = promotion.copy()
-        promotion["__link_id"] = normalize_join_id(promotion["商品ID"])
-        promotion["__date"] = pd.to_datetime(promotion["日期"], errors="coerce").dt.strftime("%Y-%m-%d")
-        promotion["__store"] = promotion["store"].astype("string").str.strip()
-        promotion["__key"] = list(zip(promotion["__link_id"], promotion["__store"], promotion["__date"]))
-        matched = promotion[promotion["__key"].isin(main_keys)].copy()
-
-        update_fields = PROMOTION_STRING_COLUMNS + PROMOTION_NUMERIC_COLUMNS
-        set_clause = ", ".join([f"`{col}` = %s" for col in update_fields] + ["`推广数据匹配` = 1"])
-        update_sql = (
-            f"UPDATE {TABLE_NAME} SET {set_clause} "
-            "WHERE `链接id` = %s AND `店铺名称` = %s AND `数据日期` = %s"
-        )
-
-        def db_value(value):
-            if value is None or (isinstance(value, float) and (pd.isna(value) or np.isinf(value))):
-                return None
-            return value.item() if isinstance(value, np.generic) else value
-
-        update_rows = []
-        for _, row in matched.iterrows():
-            values = [db_value(row[col]) for col in update_fields]
-            values.extend([row["__link_id"], row["__store"], row["__date"]])
-            update_rows.append(tuple(values))
-
-        updated = 0
-        for i in range(0, len(update_rows), 500):
-            batch = update_rows[i:i + 500]
-            cur.executemany(update_sql, batch)
-            conn.commit()
-            updated += len(batch)
-
+        daily_rows = replace_promotion_daily_table(conn, promotion)
         return {
             "status": "ok",
-            "message": "推广字段回填完成",
+            "message": "独立推广数据表刷新完成",
             "promotion": {
                 **promotion_stats,
-                "main_keys": len(main_keys),
-                "matched_keys": len(matched),
-                "updated_rows": updated,
-                "hourly_table": PROMOTION_HOURLY_TABLE,
-                "hourly_rows": hourly_rows,
-                "added_columns": added_columns,
+                "daily_table": PROMOTION_DAILY_TABLE,
+                "daily_rows": daily_rows,
             },
         }
     except Exception:
@@ -850,7 +1011,7 @@ def run_etl():
         merged = merged[~merged["负责人"].str.contains("淘宝", na=False)]
         print(f"🗑 已过滤负责人=淘宝: {before - len(merged)} 行")
 
-    # 读取推广目录，并以主表为左表补充商品推广明细。
+    # 读取推广目录；推广事实写入独立表，不再并入利润率主表。
     promotion, promotion_stats = load_promotion_data()
     if not promotion_stats["files_found"] or not promotion_stats["files_processed"]:
         print("❌ 推广目录没有有效数据，停止本次主表重建，避免覆盖已有完整数据")
@@ -861,7 +1022,11 @@ def run_etl():
             "files_error": errors,
             "promotion": promotion_stats,
         }
-    merged, merge_stats = merge_promotion_data(merged, promotion)
+    merge_stats = {
+        "matched_rows": 0,
+        "mode": "independent_promotion_table",
+        "note": "利润率主表与推广事实表分开存储",
+    }
     link_info, link_info_stats = load_link_info_data()
     if not link_info_stats["files_found"] or not link_info_stats["files_processed"]:
         print("❌ 链接信息目录没有有效数据，停止本次主表重建")
@@ -877,7 +1042,7 @@ def run_etl():
         "📣 推广数据: "
         f"{promotion_stats['files_processed']}/{promotion_stats['files_found']} 个文件, "
         f"去重后 {promotion_stats['rows_after_dedup']} 行, "
-        f"匹配主表 {merge_stats['matched_rows']} 行"
+        "独立写入推广事实表"
     )
     print(
         "🔗 链接信息: "
@@ -890,20 +1055,18 @@ def run_etl():
     # 入库 MySQL（全量替换）
     conn = get_mysql()
     cur = conn.cursor()
-    hourly_rows = replace_promotion_hourly_table(conn, promotion)
+    daily_rows = replace_promotion_daily_table(conn, promotion)
 
     # 删旧表重建
     cur.execute(f"DROP TABLE IF EXISTS {TABLE_NAME}")
     
-    # 动态生成建表语句（基于实际数据列）
+    # 按利润率字段白名单生成建表语句，避免历史推广字段再次进入主表。
     col_defs = ["id INT AUTO_INCREMENT PRIMARY KEY"]
-    for c in merged.columns:
+    for c in PROFIT_TABLE_COLUMNS:
         col_name = f"`{c}`"
         if c in ("数据日期",):
             col_defs.append(f"{col_name} DATE")
-        elif c in ("商品标题", "商品名称", "来源文件", "store", "推广来源文件") or c in PROMOTION_STRING_COLUMNS:
-            col_defs.append(f"{col_name} TEXT")
-        elif c in ("链接id", "商品编码", "店铺名称", "负责人", "出价方式"):
+        elif c in PROFIT_TEXT_COLUMNS:
             col_defs.append(f"{col_name} VARCHAR(200)")
         else:
             col_defs.append(f"{col_name} DOUBLE")
@@ -961,8 +1124,8 @@ def run_etl():
         "promotion": {
             **promotion_stats,
             **merge_stats,
-            "hourly_table": PROMOTION_HOURLY_TABLE,
-            "hourly_rows": hourly_rows,
+            "daily_table": PROMOTION_DAILY_TABLE,
+            "daily_rows": daily_rows,
         },
         "link_info": {**link_info_stats, "table": LINK_INFO_TABLE, "rows": link_info_rows},
         "dates": sorted(merged["数据日期"].unique().tolist()),
@@ -993,7 +1156,8 @@ def get_data(
     where = []
     params = []
     if link_ids:
-        ids = [item.strip() for item in link_ids.split(",") if item.strip()]
+        ids = [normalize_join_id_value(item) for item in link_ids.split(",") if item.strip()]
+        ids = [item for item in ids if item]
         if ids:
             placeholders = ",".join(["%s"] * len(ids))
             where.append(f"`链接id` IN ({placeholders})")
@@ -1049,7 +1213,7 @@ def get_promotion_summary(
     store_name: str = Query(default=""),
     size: int = Query(default=5000, ge=1, le=20000),
 ):
-    """Aggregate only real promotion facts from the MySQL hourly table."""
+    """Aggregate only real promotion facts from the MySQL daily table."""
     where = ["1=1", "(is_deleted IS NULL OR LOWER(CAST(is_deleted AS CHAR)) NOT IN ('1', 'true', 'yes', '是'))"]
     params = []
     id_values = [normalize_join_id_value(value) for value in str(product_id or "").replace("，", ",").split(",") if value.strip()]
@@ -1180,12 +1344,13 @@ def get_promotion_summary(
             "rows": len(rows),
             "date_range": [start or None, end or None],
             "source_table": PROMOTION_HOURLY_TABLE,
-            "source_grain": "store + product_id + data_date + promotion_hour",
+            "source_grain": "store + product_id + data_date",
         },
     }
 
-@app.get("/api/v3/promotion-hourly")
-def get_promotion_hourly(
+@app.get("/api/v3/promotion-hourly", include_in_schema=False)
+@app.get("/api/v3/promotion-daily")
+def get_promotion_daily(
     link_id: str = Query(default=""),
     product_id: str = Query(default=""),
     product_name: str = Query(default=""),
@@ -1195,7 +1360,7 @@ def get_promotion_hourly(
     hour: str = Query(default=""),
     size: int = Query(default=5000, ge=1, le=20000),
 ):
-    """Read the independent MySQL promotion fact table at date + hour grain."""
+    """Read the independent MySQL promotion fact table at daily grain."""
     where = ["1=1"]
     params = []
     id_values = [normalize_join_id_value(value) for value in (link_id, product_id) if value]
@@ -1218,11 +1383,10 @@ def get_promotion_hourly(
     if end:
         where.append("data_date <= %s")
         params.append(end)
-    if hour:
-        where.append("promotion_hour LIKE %s")
-        params.append(f"{hour}%")
+    # hour 参数仅为兼容旧调用保留；日级来源不再按小时过滤。
 
-    # 小时抽屉需要读取推广表的完整指标；对旧表做字段探测，避免历史表缺列时整条接口失败。
+    # 保留原接口路径以兼容前端；新来源按天返回，promotion_hour 固定为“全天”。
+    # 对旧表做字段探测，避免历史表缺列时整条接口失败。
     requested_columns = [
         "data_date", "promotion_hour", "product_id", "product_name", "store_name", "source_file",
         "spend", "total_spend", "revenue", "net_revenue", "roi", "net_roi", "net_orders", "orders",
@@ -1253,7 +1417,7 @@ def get_promotion_hourly(
         columns = [column[0] for column in cur.description]
     except pymysql.err.ProgrammingError as exc:
         if "doesn't exist" in str(exc):
-            return {"success": False, "error": f"推广小时数据表 {PROMOTION_HOURLY_TABLE} 尚未初始化，请先运行推广 ETL"}
+            return {"success": False, "error": f"推广日数据表 {PROMOTION_DAILY_TABLE} 尚未初始化，请先运行推广 ETL"}
         raise
     finally:
         conn.close()
@@ -1361,12 +1525,44 @@ OPERATION_NAMES = {
     "delist": "产品下架",
     "promotion_adjust": "调整投产",
 }
+OPERATION_TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
+OPERATION_ACTIVE_STATUSES = {"pending", "running", "cancelling"}
 PROMOTION_ADJUST_PRESETS = {
     "maintenance-005": {"label": "日常维护", "display": "+0.05", "value": 0.05},
     "serious-loss-01": {"label": "亏损严重", "display": "+0.1", "value": 0.1},
     "serious-loss-02": {"label": "亏损严重", "display": "+0.2", "value": 0.2},
     "maintenance-001": {"label": "日常维护", "display": "+0.01", "value": 0.01},
 }
+
+
+def _normalise_schedule(data):
+    """规范化任务执行方式。
+
+    scheduled_at 使用服务器本地时间保存，格式为 ``YYYY-MM-DD HH:MM:SS``。
+    前端的 datetime-local 不带时区，因此这里按看板服务器所在时区解释，
+    worker 也使用同一规则判断是否到达执行时间。
+    """
+    raw_mode = str(data.get("schedule_mode") or "").strip().lower()
+    raw_at = data.get("scheduled_at") or data.get("execute_at") or data.get("schedule_time")
+    raw_at = str(raw_at or "").strip()
+    scheduled_modes = {"scheduled", "later", "定时执行", "定时"}
+
+    if not raw_at:
+        if raw_mode in scheduled_modes:
+            return None, None, "请选择定时执行时间"
+        return "immediate", None, None
+
+    # 兼容 datetime-local、带秒的 ISO 字符串和带 Z/偏移量的 ISO 字符串。
+    try:
+        parsed = datetime.fromisoformat(raw_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None, None, "定时执行时间格式不正确"
+
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    if parsed <= datetime.now():
+        return None, None, "定时执行时间必须晚于当前时间"
+    return "scheduled", parsed.strftime("%Y-%m-%d %H:%M:%S"), None
 
 
 def _format_adjustment_display(direction, value):
@@ -1459,6 +1655,11 @@ def _normalise_task(task, task_type):
         else:
             item.setdefault("operation_label", "调整投产")
     item.setdefault("status", "pending")
+    item.setdefault("schedule_mode", "scheduled" if item.get("scheduled_at") else "immediate")
+    item.setdefault("scheduled_at", None)
+    item.setdefault("started_at", None)
+    item.setdefault("cancel_requested_at", None)
+    item.setdefault("cancelled_at", None)
     item.setdefault("completed_at", None)
     item.setdefault("result", None)
     item.setdefault("error", None)
@@ -1510,19 +1711,107 @@ def _history_tasks(task_type=None):
     return list(reversed(tasks[-50:]))
 
 
+def _operation_queue_snapshot():
+    """返回统一 FIFO 队列快照，并为待处理任务计算实时排队序号。"""
+    tasks = _read_operation_tasks().get("tasks", [])
+    active = []
+    history = []
+    pending_position = 0
+    for raw_task in tasks:
+        task = dict(raw_task)
+        status = str(task.get("status") or "pending").lower()
+        if status == "pending":
+            pending_position += 1
+            task["queue_position"] = pending_position
+        elif status in {"running", "cancelling"}:
+            task["queue_position"] = 0
+        if status in OPERATION_ACTIVE_STATUSES:
+            active.append(task)
+        elif status in OPERATION_TERMINAL_STATUSES:
+            history.append(task)
+    return {
+        "tasks": active,
+        "history": list(reversed(history[-20:])),
+        "summary": {
+            "pending": sum(task.get("status") == "pending" for task in active),
+            "running": sum(task.get("status") == "running" for task in active),
+            "cancelling": sum(task.get("status") == "cancelling" for task in active),
+            "completed": sum(task.get("status") == "completed" for task in tasks),
+            "failed": sum(task.get("status") == "failed" for task in tasks),
+            "cancelled": sum(task.get("status") == "cancelled" for task in tasks),
+        },
+    }
+
+
+def _start_operation_task(data):
+    """由 B 电脑 worker 在真正触发 RPA 前，把队首任务标记为执行中。"""
+    task_id = str(data.get("task_id", "")).strip()
+    if not task_id:
+        return JSONResponse({"error": "请提供task_id"}, status_code=400)
+    with _operation_lock:
+        tasks = _read_operation_tasks()
+        for task in tasks.get("tasks", []):
+            if task.get("id") != task_id:
+                continue
+            if task.get("status") != "pending":
+                return JSONResponse({"error": "任务不在排队状态，无法开始"}, status_code=409)
+            task["status"] = "running"
+            task["started_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _write_operation_tasks(tasks)
+            return {"success": True, "task": task}
+    return JSONResponse({"error": "任务不存在"}, status_code=404)
+
+
+def _cancel_operation_task(data):
+    """取消排队任务；执行中的任务先记录中断请求，等待 worker 确认清理。"""
+    task_id = str(data.get("task_id", "")).strip()
+    if not task_id:
+        return JSONResponse({"error": "请提供task_id"}, status_code=400)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _operation_lock:
+        tasks = _read_operation_tasks()
+        for task in tasks.get("tasks", []):
+            if task.get("id") != task_id:
+                continue
+            status = str(task.get("status") or "pending").lower()
+            if status == "pending":
+                task["status"] = "cancelled"
+                task["cancel_requested_at"] = now
+                task["cancelled_at"] = now
+                task["completed_at"] = now
+                task["result"] = "cancelled"
+            elif status == "running":
+                task["status"] = "cancelling"
+                task["cancel_requested_at"] = now
+            elif status == "cancelling":
+                return {"success": True, "task": task, "message": "中断请求已提交"}
+            else:
+                return JSONResponse({"error": "任务已结束，不能重复中断"}, status_code=409)
+            _write_operation_tasks(tasks)
+            return {
+                "success": True,
+                "task": task,
+                "message": "已取消排队" if task["status"] == "cancelled" else "已请求中断执行中任务",
+            }
+    return JSONResponse({"error": "任务不存在"}, status_code=404)
+
+
 def _complete_operation_task(data):
     task_id = str(data.get("task_id", "")).strip()
     if not task_id:
         return JSONResponse({"error": "请提供task_id"}, status_code=400)
 
     result = str(data.get("result", "")).strip().lower()
-    task_status = "completed" if result == "ok" else "failed"
     with _operation_lock:
         tasks = _read_operation_tasks()
         for task in tasks.get("tasks", []):
-            if task.get("id") == task_id and task.get("status") == "pending":
+            if task.get("id") == task_id and task.get("status") in OPERATION_ACTIVE_STATUSES:
+                cancelling = task.get("status") == "cancelling"
+                task_status = "cancelled" if cancelling or result in {"cancel", "cancelled", "canceled"} else ("completed" if result == "ok" else "failed")
                 task["status"] = task_status
                 task["completed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if task_status == "cancelled":
+                    task["cancelled_at"] = task["completed_at"]
                 task["result"] = data.get("result", "")
                 task["error"] = data.get("error", "")
                 _write_operation_tasks(tasks)
@@ -1540,6 +1829,10 @@ def _create_operation_task(task_type, data):
     store_names = raw_store_names if isinstance(raw_store_names, list) else []
     store_names = [str(store_name).strip() for store_name in store_names[:len(link_ids)]]
     store_names.extend([""] * (len(link_ids) - len(store_names)))
+
+    schedule_mode, scheduled_at, schedule_error = _normalise_schedule(data)
+    if schedule_error:
+        return None, JSONResponse({"error": schedule_error}, status_code=400)
 
     task = {
         "id": uuid.uuid4().hex[:12],
@@ -1569,6 +1862,8 @@ def _create_operation_task(task_type, data):
             or data.get("name")
             or ""
         ).strip() or None,
+        "schedule_mode": schedule_mode,
+        "scheduled_at": scheduled_at,
         "status": "pending",
         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "completed_at": None,
@@ -1608,6 +1903,23 @@ async def operation_pending():
     with _operation_lock:
         tasks = _pending_tasks()
     return {"tasks": tasks, "count": len(tasks)}
+
+
+@app.get("/api/operation/queue")
+async def operation_queue():
+    with _operation_lock:
+        snapshot = _operation_queue_snapshot()
+    return {"success": True, **snapshot}
+
+
+@app.post("/api/operation/start")
+async def operation_start(request: Request):
+    return _start_operation_task(await request.json())
+
+
+@app.post("/api/operation/cancel")
+async def operation_cancel(request: Request):
+    return _cancel_operation_task(await request.json())
 
 
 @app.post("/api/operation/complete")
@@ -2268,7 +2580,7 @@ def _operating_profit_row(row):
 
 
 def _operating_promotion_row(row):
-    """把推广表的小时源数据按日期聚合后的行转换为统一字段。"""
+    """把推广表的日级源数据转换为统一字段。"""
     spend = _operating_sum(row, "promotion_spend")
     revenue = _operating_sum(row, "promotion_revenue")
     net_revenue = _operating_sum(row, "promotion_net_revenue")
@@ -2308,7 +2620,7 @@ def _operating_promotion_row(row):
         "impressions": _operating_sum(row, "impressions"),
         "clicks": _operating_sum(row, "clicks"),
         "sitePromotionRatio": _operating_number(row.get("site_promotion_ratio")),
-        "promotionSource": "promotion_hourly",
+        "promotionSource": "promotion_daily",
     }
 
 
@@ -2331,64 +2643,42 @@ def get_link_operating_summary(
     creation_start: str = Query(default=None),
     creation_end: str = Query(default=None),
     filter_json: str = Query(default=""),
+    sale_status: str = Query(default=""),
     sort_by: str = Query(default="orderAmount"),
     sort_order: str = Query(default="desc"),
 ):
-    """统一链接经营表：链接维度 + 利润日粒度 + 推广小时粒度安全合并。
+    """统一链接经营表：以链接信息表为主表，左连接利润与推广事实。
 
-    利润表先按 链接ID + 负责人 + 数据日期 聚合，推广表先按
-    商品ID(链接ID) + 日期 + 小时写入事实粒度，再按日期汇总到主表。
-    两类事实不会直接做明细 JOIN，从根源上避免利润金额被小时数放大。
+    正式关联规则：利润表.链接id = 链接表.链接ID，
+    推广表.product_id(商品ID) = 链接表.链接ID。
+    利润表先按 链接ID + 负责人 + 数据日期 聚合，推广表按
+    商品ID + 店铺 + 数据日期写入日事实粒度。
+    两类事实不会直接做明细 JOIN，从根源上避免利润金额被重复行放大；
+    事实表中的孤立 ID 也不会反向生成主表记录。
     """
     conn = get_mysql()
     try:
         # 1) 链接信息维度：它是展示字段和创建时间筛选的来源。
+        # 主表必须完整读取最新快照；筛选要在事实表 ID 合并后执行，
+        # 否则“已下架”但仍有利润/推广事实的链接会在主表 SQL 阶段被提前过滤掉。
         info_where = ["`链接ID` IS NOT NULL", "`链接ID` <> ''"]
         info_params = []
         requested_ids = [normalize_join_id_value(item) for item in str(link_ids or "").replace("，", ",").split(",") if item.strip()]
         requested_ids = [item for item in requested_ids if item]
-        if requested_ids:
-            info_where.append("`链接ID` IN (" + ",".join(["%s"] * len(requested_ids)) + ")")
-            info_params.extend(requested_ids)
-        if search:
-            like = f"%{search.strip()}%"
-            info_where.append("(`链接ID` LIKE %s OR `商品编码` LIKE %s OR `商品标题` LIKE %s OR `店铺名称` LIKE %s)")
-            info_params.extend([like, like, like, like])
-        if product_code:
-            info_where.append("`商品编码` LIKE %s")
-            info_params.append(f"%{product_code.strip()}%")
-        if product_name:
-            info_where.append("`商品标题` LIKE %s")
-            info_params.append(f"%{product_name.strip()}%")
-        if store_name:
-            info_where.append("`店铺名称` LIKE %s")
-            info_params.append(f"%{store_name.strip()}%")
-        if brand:
-            brand_patterns = {"浪奇": "%浪奇%", "威王": "%威王%", "舒蕾": "%舒蕾%"}
-            if brand in brand_patterns:
-                info_where.append("`店铺名称` LIKE %s")
-                info_params.append(brand_patterns[brand])
-            elif brand == "白牌":
-                info_where.append("(`店铺名称` IS NULL OR (`店铺名称` NOT LIKE %s AND `店铺名称` NOT LIKE %s AND `店铺名称` NOT LIKE %s))")
-                info_params.extend(["%浪奇%", "%威王%", "%舒蕾%"])
         creation_start_value, creation_end_value = _creation_window(creation_days, creation_start, creation_end)
-        if creation_start_value or creation_end_value:
-            date_expr = _creation_date_expression("li")
-            if creation_start_value:
-                info_where.append(f"DATE({date_expr}) >= %s")
-                info_params.append(creation_start_value)
-            if creation_end_value:
-                info_where.append(f"DATE({date_expr}) <= %s")
-                info_params.append(creation_end_value)
 
         cur = conn.cursor()
+        cur.execute(f"SHOW COLUMNS FROM `{LINK_INFO_TABLE}`")
+        link_info_columns = {row[0] for row in cur.fetchall()}
+        sale_status_expr = "`在售状态`" if "在售状态" in link_info_columns else "'在售'"
         cur.execute(
-            f"SELECT `链接ID`, `店铺名称`, `图片链接`, `商品标题`, `创建时间`, `商品编码` "
+            f"SELECT `链接ID`, `店铺名称`, `图片链接`, `商品标题`, `创建时间`, `商品编码`, {sale_status_expr} AS sale_status "
             f"FROM `{LINK_INFO_TABLE}` li WHERE {' AND '.join(info_where)}",
             info_params,
         )
+        master_source_rows = cur.fetchall()
         info_by_id = {}
-        for link_id, store, image_url, title, created_at, code in cur.fetchall():
+        for link_id, store, image_url, title, created_at, code, master_sale_status in master_source_rows:
             normalized_id = normalize_join_id_value(link_id)
             if not normalized_id or normalized_id in info_by_id:
                 continue
@@ -2398,10 +2688,10 @@ def get_link_operating_summary(
                 "title": str(title or ""),
                 "createdAt": str(created_at or "")[:19],
                 "productCode": str(code or ""),
+                "saleStatus": str(master_sale_status or "在售"),
             }
-        allowed_ids = set(info_by_id)
-        if not allowed_ids:
-            return {"success": True, "data": [], "summary": {"links": 0}, "total": 0, "page": page, "size": size, "pages": 0}
+        master_link_ids = set(info_by_id)
+        master_duplicate_rows = max(len(master_source_rows) - len(master_link_ids), 0)
 
         # 2) 利润事实：明确按 链接ID + 负责人 + 数据日期 聚合。
         cur.execute(f"SHOW COLUMNS FROM `{TABLE_NAME}`")
@@ -2438,14 +2728,20 @@ def get_link_operating_summary(
         cur.execute(profit_sql, profit_params)
         profit_columns_result = [item[0] for item in cur.description]
         profit_daily = []
+        profit_fact_link_ids = set()
+        profit_unmatched_link_ids = set()
         for raw in cur.fetchall():
             item = dict(zip(profit_columns_result, raw))
             link_id = normalize_join_id_value(item.get("link_id"))
-            if link_id in allowed_ids:
-                item["link_id"] = link_id
-                profit_daily.append(item)
+            if not link_id:
+                continue
+            profit_fact_link_ids.add(link_id)
+            if link_id not in master_link_ids:
+                profit_unmatched_link_ids.add(link_id)
+            item["link_id"] = link_id
+            profit_daily.append(item)
 
-        # 3) 推广事实：先按 商品ID + 店铺 + 日期 聚合；源表自身仍保持日期 + 小时唯一粒度。
+        # 3) 推广事实：源表和查询结果均按 商品ID + 店铺 + 日期 聚合。
         promotion_where = ["(is_deleted IS NULL OR LOWER(CAST(is_deleted AS CHAR)) NOT IN ('1', 'true', 'yes'))"]
         promotion_params = []
         if start:
@@ -2482,12 +2778,50 @@ def get_link_operating_summary(
         cur.execute(promotion_sql, promotion_params)
         promotion_columns_result = [item[0] for item in cur.description]
         promotion_daily = []
+        promotion_fact_link_ids = set()
+        promotion_unmatched_link_ids = set()
         for raw in cur.fetchall():
             item = dict(zip(promotion_columns_result, raw))
+            # 业务定义：推广表的商品 ID 就是链接表的链接 ID。
             link_id = normalize_join_id_value(item.get("product_id"))
-            if link_id in allowed_ids:
-                item["link_id"] = link_id
-                promotion_daily.append(item)
+            if not link_id:
+                continue
+            promotion_fact_link_ids.add(link_id)
+            if link_id not in master_link_ids:
+                promotion_unmatched_link_ids.add(link_id)
+            item["link_id"] = link_id
+            promotion_daily.append(item)
+
+        # 将事实表中存在、但不在最新链接信息快照中的 ID 补成“已下架”主表记录。
+        # 事实表中的商品标题/店铺是兜底展示信息，创建时间必须留空，避免误当成在售链接。
+        fact_info_by_id = {}
+        for item in profit_daily:
+            link_id = item["link_id"]
+            fact_info = fact_info_by_id.setdefault(link_id, {})
+            if item.get("store_name") and not fact_info.get("storeName"):
+                fact_info["storeName"] = str(item.get("store_name"))
+            if item.get("title") and not fact_info.get("title"):
+                fact_info["title"] = str(item.get("title"))
+            if item.get("product_code") and not fact_info.get("productCode"):
+                fact_info["productCode"] = str(item.get("product_code"))
+        for item in promotion_daily:
+            link_id = item["link_id"]
+            fact_info = fact_info_by_id.setdefault(link_id, {})
+            if item.get("store_name") and not fact_info.get("storeName"):
+                fact_info["storeName"] = str(item.get("store_name"))
+            if item.get("product_name") and not fact_info.get("title"):
+                fact_info["title"] = str(item.get("product_name"))
+        for link_id, fact_info in fact_info_by_id.items():
+            if link_id in master_link_ids:
+                continue
+            info_by_id[link_id] = {
+                "storeName": fact_info.get("storeName", ""),
+                "imageUrl": "",
+                "title": fact_info.get("title", ""),
+                "createdAt": "",
+                "productCode": fact_info.get("productCode", ""),
+                "saleStatus": "已下架",
+            }
 
         profit_by_link = defaultdict(list)
         for item in profit_daily:
@@ -2497,14 +2831,18 @@ def get_link_operating_summary(
             promotion_by_link[item["link_id"]].append(_operating_promotion_row(item))
 
         if store_person:
-            person_ids = set(item["link_id"] for item in profit_daily)
+            # 负责人属于利润事实。指定负责人时，只保留该负责人实际匹配到的主表链接，
+            # 防止后续“无事实数据补零”把其他负责人链接重新加回结果集。
+            person_ids = profit_fact_link_ids
         else:
-            person_ids = allowed_ids
+            person_ids = master_link_ids | profit_fact_link_ids | promotion_fact_link_ids
 
         def in_text_filter(link_id, info):
+            if requested_ids and link_id not in requested_ids:
+                return False
             if search:
                 needle = search.strip().lower()
-                values = [link_id, info.get("productCode"), info.get("title"), info.get("storeName")]
+                values = [link_id, info.get("productCode"), info.get("title"), info.get("storeName"), info.get("saleStatus")]
                 if not any(needle in str(value or "").lower() for value in values):
                     return False
             if product_code and product_code.strip().lower() not in info.get("productCode", "").lower():
@@ -2515,6 +2853,17 @@ def get_link_operating_summary(
                 return False
             if brand and _operating_brand(info.get("storeName")) != brand:
                 return False
+            if sale_status and sale_status not in {"全部", "all", "ALL"} and info.get("saleStatus") != sale_status:
+                return False
+            if creation_start_value or creation_end_value:
+                created_date = str(info.get("createdAt") or "")[:10]
+                # 已下架事实没有创建时间，指定创建时间范围时不参与结果。
+                if not created_date:
+                    return False
+                if creation_start_value and created_date < creation_start_value:
+                    return False
+                if creation_end_value and created_date > creation_end_value:
+                    return False
             return True
 
         def merge_daily(link_id):
@@ -2621,7 +2970,7 @@ def get_link_operating_summary(
 
         # 主表保留“链接信息表”中的全部链接；没有利润/推广事实的链接也展示，指标按 0 处理。
         # 这样用户才能识别“暂无事实数据”的链接，而不是把它误认为链接不存在。
-        for link_id in sorted(allowed_ids - {item.get("linkId") for item in rows}):
+        for link_id in sorted(person_ids - {item.get("linkId") for item in rows}):
             info = info_by_id.get(link_id, {})
             if not in_text_filter(link_id, info):
                 continue
@@ -2670,12 +3019,16 @@ def get_link_operating_summary(
             "dataDays": len({daily.get("dataDate") for item in rows for daily in item.get("dailyRows", [])}),
             "firstDate": min((item.get("firstDate") for item in rows if item.get("firstDate")), default=""),
             "lastDate": max((item.get("lastDate") for item in rows if item.get("lastDate")), default=""),
+            # orderAmount 是利润率表“收入”字段的标准化 API 名称，必须单独返回，
+            # 避免前端把推广交易额误当成订单收入。
+            "orderAmount": total_order_amount,
             "orders": total_of("profitOrders"), "revenue": total_promotion_revenue,
             "spend": total_promotion_spend, "netRevenue": total_of("promotionNetRevenue"),
             "impressions": total_of("impressions"), "clicks": total_of("clicks"),
             "cost": total_of("goodsCost"), "shipping": total_of("shippingCost"),
             "grossProfit": total_of("grossProfit"), "promotion": total_of("profitPromotionFee"),
             "platformProfit": total_of("platformProfit"), "promotionOrders": total_of("promotionOrders"),
+            "promotionNetOrders": total_of("promotionNetOrders"),
             "costPct": _operating_ratio(total_of("goodsCost"), total_order_amount),
             "shippingPct": _operating_ratio(total_of("shippingCost"), total_order_amount),
             "grossMargin": _operating_ratio(total_of("grossProfit"), total_order_amount),
@@ -2692,10 +3045,29 @@ def get_link_operating_summary(
             "page": page, "size": size, "pages": (total + size - 1) // size if total else 0,
             "meta": {
                 "source_tables": {"link_info": LINK_INFO_TABLE, "profit": TABLE_NAME, "promotion": PROMOTION_HOURLY_TABLE},
+                "master_table": LINK_INFO_TABLE,
+                "join_mode": "LEFT JOIN",
+                "join_keys": {
+                    "profit": f"{TABLE_NAME}.链接id = {LINK_INFO_TABLE}.链接ID",
+                    "promotion": f"{PROMOTION_HOURLY_TABLE}.product_id = {LINK_INFO_TABLE}.链接ID",
+                },
                 "link_info_grain": "链接ID",
                 "profit_grain": "链接ID + 负责人 + 数据日期",
-                "promotion_grain": "商品ID + 店铺 + 数据日期 + 推广小时",
+                "promotion_grain": "商品ID + 店铺 + 数据日期",
                 "display_grain": "链接ID",
+                "integrity": {
+                    "scope": "当前链接主表筛选范围 + 当前事实日期筛选范围",
+                    "master_source_rows": len(master_source_rows),
+                    "master_unique_links": len(master_link_ids),
+                    "master_duplicate_rows": master_duplicate_rows,
+                    "profit_fact_links": len(profit_fact_link_ids),
+                    "profit_matched_links": len(profit_fact_link_ids & master_link_ids),
+                    "profit_unmatched_links": len(profit_unmatched_link_ids),
+                    "promotion_fact_links": len(promotion_fact_link_ids),
+                    "promotion_matched_links": len(promotion_fact_link_ids & master_link_ids),
+                    "promotion_unmatched_links": len(promotion_unmatched_link_ids),
+                    "result_links": total,
+                },
             },
         })
     finally:
@@ -3078,6 +3450,7 @@ def get_status():
             "stores": hourly[3],
             "products": hourly[4],
             "hours": hourly[5],
+            "grain": "store + product_id + data_date",
         }
     except Exception as e:
         db_info = {"error": str(e)}
@@ -3090,7 +3463,7 @@ def get_status():
 
     return {
         "database": db_info,
-        "promotion_hourly": promotion_info,
+        "promotion_daily": promotion_info,
         "xlsx_files_available": xlsx_count,
         "server_time": datetime.now().isoformat()
     }

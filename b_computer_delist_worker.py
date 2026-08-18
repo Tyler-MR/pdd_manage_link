@@ -7,10 +7,11 @@ B 电脑统一操作任务监听脚本
   - task_type=promotion_adjust：调整投产
 
 工作方式：
-  1. 轮询 /api/operation/pending，按创建顺序放入本地 FIFO 队列；
+  1. 轮询 /api/operation/queue，按创建顺序放入本地 FIFO 队列；
   2. 同一时间只生成一个任务文件和一个 new_task.txt 触发文件；
-  3. B 电脑上的影刀/RPA 根据 trigger 中的 task_type 分流执行；
-  4. RPA 完成后删除 new_task.txt，worker 检测到删除后调用
+  3. 开始前调用 /api/operation/start 标记执行中；收到中断请求时清理任务文件；
+  4. B 电脑上的影刀/RPA 根据 trigger 中的 task_type 分流执行；
+  5. RPA 完成后删除 new_task.txt，worker 检测到删除后调用
      /api/operation/complete 回写任务结果，再处理下一条。
 
 运行：
@@ -20,7 +21,8 @@ B 电脑统一操作任务监听脚本
   pip install requests openpyxl
 
 环境变量：
-  PROFIT_API_BASE：利润看板地址，默认 https://profit.tyler-personnal.top
+  LINK_MANAGEMENT_API_BASE：链接群控看板地址，默认 https://link-management.tyler-personnal.top
+  PROFIT_API_BASE / DELIST_API_BASE：旧版环境变量名称，继续兼容
   OPERATION_TASK_DIR：任务文件目录，默认 C:\DelistTasks
   OPERATION_POLL_INTERVAL：轮询秒数，默认 10
 """
@@ -35,9 +37,12 @@ from datetime import datetime
 import requests
 
 
-API_BASE = os.getenv(
-    "PROFIT_API_BASE",
-    os.getenv("DELIST_API_BASE", "https://profit.tyler-personnal.top"),
+DEFAULT_API_BASE = "https://link-management.tyler-personnal.top"
+API_BASE = (
+    os.getenv("LINK_MANAGEMENT_API_BASE")
+    or os.getenv("PROFIT_API_BASE")
+    or os.getenv("DELIST_API_BASE")
+    or DEFAULT_API_BASE
 ).rstrip("/")
 TASK_DIR = os.getenv("OPERATION_TASK_DIR", r"C:\DelistTasks")
 POLL_INTERVAL = max(2, int(os.getenv("OPERATION_POLL_INTERVAL", "10")))
@@ -62,6 +67,29 @@ def now_text():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def scheduled_datetime(task):
+    """读取任务的计划时间；空值表示立即执行。"""
+    raw = str(task.get("scheduled_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        # API 已经会拦截非法的新任务；旧任务如果字段损坏，跳过而不是误执行。
+        return None
+
+
+def schedule_is_due(task):
+    planned_at = scheduled_datetime(task)
+    if planned_at is None and str(task.get("scheduled_at") or "").strip():
+        print(f"[{now_text()}] 跳过无效计划时间任务：{task.get('id', '')}")
+        return False
+    return planned_at is None or planned_at <= datetime.now()
+
+
 def load_completed():
     if not os.path.exists(COMPLETED_FILE):
         return set()
@@ -79,17 +107,32 @@ def save_completed(task_ids):
         json.dump(sorted(task_ids), f, ensure_ascii=False, indent=2)
 
 
-def fetch_pending_tasks():
+def fetch_queue_snapshot():
     try:
-        response = requests.get(f"{API_BASE}/api/operation/pending", timeout=15)
+        response = requests.get(f"{API_BASE}/api/operation/queue", timeout=15)
         response.raise_for_status()
         payload = response.json()
-        return payload.get("tasks", []) if isinstance(payload, dict) else []
+        return payload if isinstance(payload, dict) else None
     except requests.exceptions.ConnectionError:
         print(f"[{now_text()}] 无法连接 {API_BASE}")
     except Exception as exc:
         print(f"[{now_text()}] 拉取统一任务队列失败：{exc}")
-    return []
+    return None
+
+
+def mark_started(task_id):
+    try:
+        response = requests.post(
+            f"{API_BASE}/api/operation/start",
+            json={"task_id": task_id},
+            timeout=15,
+        )
+        if not response.ok:
+            print(f"[{now_text()}] 标记执行中失败 {task_id}: HTTP {response.status_code} {response.text}")
+        return response.ok
+    except Exception as exc:
+        print(f"[{now_text()}] 标记执行中失败 {task_id}: {exc}")
+        return False
 
 
 def mark_completed(task_id, result="ok", error=""):
@@ -105,6 +148,17 @@ def mark_completed(task_id, result="ok", error=""):
     except Exception as exc:
         print(f"[{now_text()}] 回写任务失败 {task_id}: {exc}")
         return False
+
+
+def cleanup_task_files():
+    """清理尚未被 RPA 消费的任务文件，用于确认中断或启动失败回滚。"""
+    paths = [TRIGGER_FILE, WORKBOOK_FILE, WORKBOOK_FILE.replace(".xlsx", ".csv")]
+    for path in paths:
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError as exc:
+            print(f"[{now_text()}] 清理任务文件失败 {path}: {exc}")
 
 
 def _task_type(task):
@@ -262,6 +316,23 @@ def main():
 
     while True:
         try:
+            snapshot = fetch_queue_snapshot()
+            remote_tasks = snapshot.get("tasks", []) if snapshot else []
+            remote_status = {
+                str(task.get("id", "")).strip(): str(task.get("status") or "pending").lower()
+                for task in remote_tasks
+                if str(task.get("id", "")).strip()
+            }
+
+            # 执行中任务收到中断请求后，优先清理触发文件并回写取消结果。
+            if active_task_id and remote_status.get(active_task_id) == "cancelling":
+                cleanup_task_files()
+                if mark_completed(active_task_id, result="cancelled"):
+                    print(f"[{now_text()}] 任务已中断：{active_task_id}")
+                    completed.add(active_task_id)
+                    save_completed(completed)
+                    active_task_id = None
+
             # 触发文件被影刀/RPA 删除，代表当前任务已执行完成。
             if active_task_id and not os.path.exists(TRIGGER_FILE):
                 if mark_completed(active_task_id):
@@ -272,8 +343,21 @@ def main():
                 else:
                     print(f"[{now_text()}] 任务结果暂未回写，保留当前任务等待重试：{active_task_id}")
 
+            # 用服务端实时 pending 列表同步本地等待队列，已取消任务立即移除。
+            if snapshot is not None:
+                remote_pending_ids = {
+                    str(task.get("id", "")).strip()
+                    for task in remote_tasks
+                    if str(task.get("status") or "pending").lower() == "pending"
+                }
+                pending_queue = [item for item in pending_queue if item[0] in remote_pending_ids]
+
             # 统一队列中的两种任务按原顺序进入同一个 FIFO 队列。
-            for task in fetch_pending_tasks():
+            for task in remote_tasks:
+                if str(task.get("status") or "pending").lower() != "pending":
+                    continue
+                if not schedule_is_due(task):
+                    continue
                 task_id = str(task.get("id", "")).strip()
                 if not task_id or task_id in completed or task_id == active_task_id:
                     continue
@@ -288,10 +372,13 @@ def main():
                 if os.path.exists(TRIGGER_FILE):
                     print(f"[{now_text()}] 触发文件仍存在，暂不覆盖：{TRIGGER_FILE}")
                     pending_queue.insert(0, (task_id, task))
-                elif write_task_files(task):
-                    active_task_id = task_id
                 else:
-                    pending_queue.insert(0, (task_id, task))
+                    if not mark_started(task_id):
+                        print(f"[{now_text()}] 任务可能已被取消，跳过启动：{task_id}")
+                    elif write_task_files(task):
+                        active_task_id = task_id
+                    else:
+                        mark_completed(task_id, result="failed", error="生成任务文件失败")
 
             if active_task_id:
                 print(f"[{now_text()}] 执行中：{active_task_id} | 等待：{len(pending_queue)}")

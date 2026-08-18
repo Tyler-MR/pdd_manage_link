@@ -91,7 +91,7 @@ export function useProfitData() {
     Object.entries(params).forEach(([key, value]) => {
       if (value !== undefined && value !== null && value !== '') query.set(key, value);
     });
-    return request(`/api/v3/promotion-hourly?${query.toString()}`);
+    return request(`/api/v3/promotion-daily?${query.toString()}`);
   }
 
   async function loadPromotionSummary(params = {}) {
@@ -240,6 +240,22 @@ export function useProfitData() {
     });
   }
 
+  async function loadOperationQueue() {
+    const response = await request('/api/operation/queue');
+    if (!response?.success) throw new Error(response?.error || '任务队列加载失败');
+    return response;
+  }
+
+  async function cancelOperationTask(taskId) {
+    const response = await request('/api/operation/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task_id: taskId }),
+    });
+    if (!response?.success) throw new Error(response?.error || '任务中断失败');
+    return response;
+  }
+
   return {
     data,
     status,
@@ -271,5 +287,7 @@ export function useProfitData() {
     deleteStandard,
     submitDelist,
     submitPromotionAdjust,
+    loadOperationQueue,
+    cancelOperationTask,
   };
 }

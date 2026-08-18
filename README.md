@@ -35,7 +35,7 @@ Copy-Item .env.example .env
 
 ## 本地利润率数据定时更新
 
-利润率 ETL 在 Windows 本地电脑执行：利润率只读取 `PROFIT_NETWORK_BASE` 下各月份文件夹内的 xlsx，推广只读取 `PROFIT_PROMOTION_BASE` 下的小时推广 xlsx；链接信息只读取 `PROFIT_LINK_INFO_BASE`，将最新数据文件放在前面合并，并按 `链接ID` 去重保留第一条，写入 `bi.pdd_link_info`。Linux 只负责读取 MySQL 提供 API。
+利润率 ETL 在 Windows 本地电脑执行：利润率只读取 `PROFIT_NETWORK_BASE` 下各月份文件夹内、文件日期在 `PROFIT_DATA_START_DATE`（默认 `2026-06-01`）至今天的 xlsx，并只写入利润率白名单字段；推广读取 `PROFIT_PROMOTION_BASE` 根目录下以下载日期开头的 xlsx，只处理名称以 `商品_分天数据` 开头的 sheet，并按“店铺 + 商品ID + 数据日期”独立写入 `bi.pdd_web_promotion_daily`，重叠日期以较新的下载文件为准；链接信息只读取 `PROFIT_LINK_INFO_BASE`，将最新数据文件的全部店铺 Sheet 合并，并按 `链接ID` 去重保留第一条，写入 `bi.pdd_link_info`。Linux 只负责读取 MySQL 提供 API。
 
 运行脚本：
 
@@ -50,7 +50,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\register_profit_
 ```
 
 The update task now runs as a long-lived watcher instead of a once-daily job.
-It watches `\\192.168.16.34\d\财务\2026年\拼多多链接利润率\日利润率`, scans direct Excel files in the `6月` and `7月` folders, and runs the ETL after a new or changed workbook remains stable. The watcher writes to `logs\profit_etl_watch.log` and keeps its successful snapshot in `cache_v3_etl\profit_etl_watch_state.json`.
+It watches `\\192.168.16.34\d\财务\2026年\拼多多链接利润率\日利润率`, scans direct Excel files in all month folders, and relies on `PROFIT_DATA_START_DATE` plus the current date to select the valid profit files. It runs the ETL after a new or changed workbook remains stable. The watcher writes to `logs\profit_etl_watch.log` and keeps its successful snapshot in `cache_v3_etl\profit_etl_watch_state.json`.
 
 Register or restart the watcher with:
 
@@ -58,7 +58,7 @@ Register or restart the watcher with:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\register_profit_etl_task.ps1
 ```
 
-计划任务只扫描 `日利润率\6月` 和 `日利润率\7月` 的直属 Excel 文件，不递归读取月份目录内的子文件夹。源目录不可访问或没有有效文件时，脚本会直接失败并保留原数据库表。
+计划任务只扫描 `日利润率` 各月份目录的直属 Excel 文件，不递归读取月份目录内的子文件夹；利润率文件日期必须在 `PROFIT_DATA_START_DATE` 至今天之间。源目录不可访问或没有有效文件时，脚本会直接失败并保留原数据库表。
 
 ## 启动开发环境
 

@@ -57,13 +57,20 @@
               <label>品牌 <select v-model="globalFilters.brand"><option value="">全部品牌</option><option v-for="brand in brandOptions" :key="brand" :value="brand">{{ brand }}</option></select></label>
               <label>店铺名称 <input v-model="globalFilters.store_name" placeholder="输入店铺名称" /></label>
               <label>负责人 <select v-model="globalFilters.store_person"><option value="">全部负责人</option><option v-for="person in peopleNames" :key="person" :value="person">{{ person }}</option></select></label>
-              <label class="link-preset-filter">链接筛选
-                <select v-model="activeLinkPresetId" :disabled="!linkFilterPresets.length" title="选择管理中台已保存的链接筛选条件" @change="applyLinkPreset">
-                  <option value="">全部链接</option>
-                  <option v-for="preset in linkFilterPresets" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
-                </select>
-              </label>
-          <button class="button primary compact" :disabled="loading" @click="applyRange">{{ loading ? '加载中…' : '搜索' }}</button>
+               <label class="link-preset-filter">链接筛选
+                 <select v-model="activeLinkPresetId" :disabled="!linkFilterPresets.length" title="选择管理中台已保存的链接筛选条件" @change="applyLinkPreset">
+                   <option value="">全部链接</option>
+                   <option v-for="preset in linkFilterPresets" :key="preset.id" :value="preset.id">{{ preset.label }}</option>
+                 </select>
+               </label>
+               <label>商品状态
+                 <select v-model="globalFilters.sale_status" title="按最新链接信息快照筛选在售或已下架商品">
+                   <option value="">全部状态</option>
+                   <option value="在售">在售</option>
+                   <option value="已下架">已下架</option>
+                 </select>
+               </label>
+           <button class="button primary compact" :disabled="loading" @click="applyRange">{{ loading ? '加载中…' : '搜索' }}</button>
               <button class="button secondary compact" :disabled="loading" @click="clearGlobalFilters">清除筛选</button>
               <button class="button adjust compact" :disabled="promotionDimension !== 'link' || !selectedOperationIds.length" title="对当前已勾选链接调整投产" @click="openPromotionAdjust">📊 调整投产</button>
               <button class="button danger compact" :disabled="promotionDimension !== 'link' || !selectedOperationIds.length" title="下架当前已勾选链接" @click="openDelistConfirm">📦 产品下架</button>
@@ -104,7 +111,7 @@
           <section class="panel promotion-intro-panel">
             <div class="promotion-intro-copy">
               <div class="promotion-title-line"><span class="promotion-app-icon">P</span><div><span class="promotion-kicker">商品推广</span><h2>商品推广数据概览</h2></div></div>
-  <p>查看链接信息、利润日汇总和推广小时级数据；页面筛选统一使用顶部的全局筛选器。</p>
+  <p>查看链接信息、利润日汇总和推广日级数据；页面筛选统一使用顶部的全局筛选器。</p>
             </div>
             <div class="promotion-intro-actions">
               <button type="button" class="text-button" @click="promotionHelpOpen = true">产品介绍</button>
@@ -142,7 +149,7 @@
           </section>
 
           <section class="panel promotion-list-panel">
-            <div class="panel-heading promotion-list-heading"><div><h2>链接经营明细</h2><p>按{{ promotionDimensionLabel }}维度汇总链接信息、利润日数据与推广小时数据；点击“数据”查看每日/小时明细</p></div><div class="promotion-list-actions"><button type="button" class="button secondary compact" @click="openPromotionColumnConfig">字段设置</button><button type="button" class="button secondary compact" @click="promotionReportOpen = true">报表说明</button></div></div>
+            <div class="panel-heading promotion-list-heading"><div><h2>链接经营明细</h2><p>按{{ promotionDimensionLabel }}维度汇总链接信息、利润日数据与推广日数据；点击“数据”查看每日明细</p></div><div class="promotion-list-actions"><button type="button" class="button secondary compact" @click="openPromotionColumnConfig">字段设置</button><button type="button" class="button secondary compact" @click="promotionReportOpen = true">报表说明</button></div></div>
             <div class="promotion-dimension-tabs" role="tablist" aria-label="多维度查看">
               <button v-for="dimension in promotionDimensions" :key="dimension.key" type="button" role="tab" class="promotion-dimension-tab" :class="{ active: promotionDimension === dimension.key }" :aria-selected="promotionDimension === dimension.key" @click="setPromotionDimension(dimension.key)">{{ dimension.label }}</button>
             </div>
@@ -156,7 +163,7 @@
                 <div class="promotion-columns-dialog-foot"><button type="button" class="button secondary" @click="cancelPromotionColumnConfig">取消</button><button type="button" class="button secondary" @click="savePromotionColumnTemplate">保存为模板</button><button type="button" class="button primary" @click="applyPromotionColumnConfig">确定</button></div>
               </section>
             </div>
-            <div class="promotion-table-scroll"><table class="promotion-table"><thead><tr><th><input type="checkbox" :checked="allPromotionSelected" :disabled="promotionDimension !== 'link'" aria-label="全选当前筛选结果" title="全选当前筛选结果（包含所有分页）" @change="toggleAllPromotion" /></th><th v-for="column in visiblePromotionColumns" :key="column.key" :class="{ 'promotion-sortable-header': column.sortable !== false }" :aria-sort="promotionSort.key === column.key ? (promotionSort.order === 'asc' ? 'ascending' : 'descending') : 'none'"><button v-if="column.sortable !== false" type="button" class="promotion-sort-button" :class="{ active: promotionSort.key === column.key }" :title="`按${column.label}排序：第一次点击升序，再次点击降序`" @click="changePromotionSort(column.key)"><span>{{ column.label }}</span><span class="promotion-sort-arrow" aria-hidden="true">{{ promotionSort.key === column.key ? (promotionSort.order === 'asc' ? '↑' : '↓') : '↕' }}</span></button><span v-else>{{ column.label }}</span></th><th>操作</th></tr></thead><tbody><template v-for="row in pagedPromotionRows" :key="row.linkId"><tr :class="{ 'promotion-row-active': promotionExpandedKey === row.linkId }" @click="openPromotionRowDrawer(row)"><td><input v-model="selectedPromotionIds" type="checkbox" :value="row.linkId" :disabled="promotionDimension !== 'link'" :aria-label="`选择链接 ${row.linkId}`" @click.stop /></td><td v-for="column in visiblePromotionColumns" :key="column.key" :class="column.tone"><template v-if="column.key === 'imageUrl'"><button v-if="row.imageUrl" type="button" class="promotion-image-preview-button" :aria-label="`放大查看${row.title || '链接主图'}`" @click.stop="openPromotionImagePreview(row.imageUrl)"><img :src="row.imageUrl" class="promotion-link-thumb" alt="链接主图" /></button><span v-else>—</span></template><template v-else>{{ formatPromotionValue(row[column.key], column) }}</template></td><td class="promotion-row-actions"><button type="button" class="promotion-link-button" @click.stop="togglePromotionDetails(row, 'detail')">详情</button><button type="button" class="promotion-link-button" :disabled="promotionDimension !== 'link'" :title="promotionDimension === 'link' ? '查看每日/小时数据' : '请切换到链接维度查看小时数据'" @click.stop="togglePromotionDetails(row, 'data')">数据</button><button type="button" class="promotion-link-button" @click.stop="togglePromotionDetails(row, 'more')">更多</button></td></tr><tr v-if="promotionExpandedKey === row.linkId" class="promotion-expanded-row"><td :colspan="visiblePromotionColumns.length + 2"><div class="promotion-expanded-panel"><div class="promotion-expanded-head"><div><strong>{{ promotionExpandedModeLabel }} · {{ row.title }}</strong><span>链接 ID：{{ row.linkId }} · {{ row.brand }} · {{ row.person }}</span></div><button type="button" class="icon-button" aria-label="关闭详情" @click="closePromotionDetails">×</button></div><div v-if="promotionExpandedMode === 'detail'" class="promotion-detail-grid"><div><span>商品编码</span><strong>{{ row.productCode || '—' }}</strong></div><div><span>推广状态</span><strong>{{ row.status }}</strong></div><div><span>推广阶段</span><strong>{{ row.stage }}</strong></div><div><span>净目标投产比</span><strong>{{ row.targetRoi == null ? '—' : Number(row.targetRoi).toFixed(2) }}</strong></div></div><div v-else-if="promotionExpandedMode === 'data'" class="promotion-data-panel"><div class="promotion-hourly-head"><div><strong>分小时数据</strong><span>源数据粒度：数据日期 + 小时</span></div><div class="promotion-hourly-controls"><label>数据日期<select class="promotion-hour-date-select" v-model="promotionHourDate"><option value="all">全部数据日期</option><option v-for="date in promotionHourlyDates" :key="date" :value="date">{{ date }}</option></select></label><label>小时<select v-model="promotionHourPreset"><option value="all">全部小时</option><option v-for="hour in promotionHourOptions" :key="hour" :value="hour">{{ hour }}:00</option></select></label></div></div><div class="promotion-mini-metrics"><span>当前日期<strong>{{ promotionHourDate === 'all' ? '全部' : promotionHourDate }}</strong></span><span>源数据行<strong>{{ promotionHourlyRows.length.toLocaleString() }}</strong></span><span>当前筛选范围<strong>{{ promotionFilters.start }} 至 {{ promotionFilters.end }}</strong></span></div><div v-if="promotionHourlyLoading" class="empty-cell">正在加载真实分小时数据…</div><div v-else-if="promotionHourlyError" class="empty-cell">{{ promotionHourlyError }}</div><div v-else class="promotion-hourly-table-scroll"><table class="promotion-hourly-table"><thead><tr><th>数据日期</th><th>小时</th><th>曝光量</th><th>点击量</th><th>成交笔数</th><th>花费(元)</th><th>交易额(元)</th><th>投产比</th></tr></thead><tbody><tr v-for="item in promotionHourlyRows" :key="`${item.date}-${item.hour}-${item.productId}`"><td>{{ item.date }}</td><td>{{ item.hour }}</td><td>{{ Number(item.impressions || 0).toLocaleString() }}</td><td>{{ Number(item.clicks || 0).toLocaleString() }}</td><td>{{ Number(item.orders || 0).toLocaleString() }}</td><td>{{ Number(item.spend || 0).toFixed(2) }}</td><td>{{ Number(item.revenue || 0).toFixed(2) }}</td><td :class="row.targetRoi != null && item.roi >= row.targetRoi ? 'rate-positive' : 'rate-neutral'">{{ Number(item.roi || 0).toFixed(2) }}</td></tr><tr v-if="!promotionHourlyRows.length"><td colspan="8" class="empty-cell">当前商品在所选日期范围内暂无分小时源数据</td></tr></tbody></table></div></div><div v-else class="promotion-more-menu"><button type="button" @click="promotionNotice('已标记为重点观察')">标记为重点观察</button><button type="button" @click="promotionNotice('已打开调投产入口')">调整投产</button><button type="button" @click="promotionNotice('已复制商品 ID')">复制商品 ID</button><button type="button" class="danger" @click.stop="openRowDelistConfirm(row)">下架链接</button></div></div></td></tr></template><tr v-if="!promotionLoading && !pagedPromotionRows.length"><td :colspan="visiblePromotionColumns.length + 2" class="empty-cell">当前筛选条件下暂无推广商品</td></tr></tbody></table></div>
+            <div class="promotion-table-scroll"><table class="promotion-table"><thead><tr><th><input type="checkbox" :checked="allPromotionSelected" :disabled="promotionDimension !== 'link'" aria-label="全选当前筛选结果" title="全选当前筛选结果（包含所有分页）" @change="toggleAllPromotion" /></th><th v-for="column in visiblePromotionColumns" :key="column.key" :class="{ 'promotion-sortable-header': column.sortable !== false }" :aria-sort="promotionSort.key === column.key ? (promotionSort.order === 'asc' ? 'ascending' : 'descending') : 'none'"><button v-if="column.sortable !== false" type="button" class="promotion-sort-button" :class="{ active: promotionSort.key === column.key }" :title="`按${column.label}排序：第一次点击升序，再次点击降序`" @click="changePromotionSort(column.key)"><span>{{ column.label }}</span><span class="promotion-sort-arrow" aria-hidden="true">{{ promotionSort.key === column.key ? (promotionSort.order === 'asc' ? '↑' : '↓') : '↕' }}</span></button><span v-else>{{ column.label }}</span></th><th>操作</th></tr></thead><tbody><template v-for="row in pagedPromotionRows" :key="row.linkId"><tr :class="{ 'promotion-row-active': promotionExpandedKey === row.linkId }" @click="openPromotionRowDrawer(row)"><td><input v-model="selectedPromotionIds" type="checkbox" :value="row.linkId" :disabled="promotionDimension !== 'link'" :aria-label="`选择链接 ${row.linkId}`" @click.stop /></td><td v-for="column in visiblePromotionColumns" :key="column.key" :class="column.tone"><template v-if="column.key === 'imageUrl'"><button v-if="row.imageUrl" type="button" class="promotion-image-preview-button" :aria-label="`放大查看${row.title || '链接主图'}`" @click.stop="openPromotionImagePreview(row.imageUrl)"><img :src="row.imageUrl" class="promotion-link-thumb" alt="链接主图" /></button><span v-else>—</span></template><template v-else>{{ formatPromotionValue(row[column.key], column) }}</template></td><td class="promotion-row-actions"><button type="button" class="promotion-link-button" @click.stop="togglePromotionDetails(row, 'detail')">详情</button><button type="button" class="promotion-link-button" :disabled="promotionDimension !== 'link'" :title="promotionDimension === 'link' ? '查看每日推广数据' : '请切换到链接维度查看每日推广数据'" @click.stop="togglePromotionDetails(row, 'data')">数据</button><button type="button" class="promotion-link-button" @click.stop="togglePromotionDetails(row, 'more')">更多</button></td></tr><tr v-if="promotionExpandedKey === row.linkId" class="promotion-expanded-row"><td :colspan="visiblePromotionColumns.length + 2"><div class="promotion-expanded-panel"><div class="promotion-expanded-head"><div><strong>{{ promotionExpandedModeLabel }} · {{ row.title }}</strong><span>链接 ID：{{ row.linkId }} · {{ row.brand }} · {{ row.person }}</span></div><button type="button" class="icon-button" aria-label="关闭详情" @click="closePromotionDetails">×</button></div><div v-if="promotionExpandedMode === 'detail'" class="promotion-detail-grid"><div><span>商品编码</span><strong>{{ row.productCode || '—' }}</strong></div><div><span>推广状态</span><strong>{{ row.status }}</strong></div><div><span>推广阶段</span><strong>{{ row.stage }}</strong></div><div><span>净目标投产比</span><strong>{{ row.targetRoi == null ? '—' : Number(row.targetRoi).toFixed(2) }}</strong></div></div><div v-else-if="promotionExpandedMode === 'data'" class="promotion-data-panel"><div class="promotion-hourly-head"><div><strong>分天数据</strong><span>源数据粒度：数据日期</span></div><div class="promotion-hourly-controls"><label>数据日期<select class="promotion-hour-date-select" v-model="promotionHourDate"><option value="all">全部数据日期</option><option v-for="date in promotionHourlyDates" :key="date" :value="date">{{ date }}</option></select></label></div></div><div class="promotion-mini-metrics"><span>当前日期<strong>{{ promotionHourDate === 'all' ? '全部' : promotionHourDate }}</strong></span><span>源数据行<strong>{{ promotionHourlyRows.length.toLocaleString() }}</strong></span><span>当前筛选范围<strong>{{ promotionFilters.start }} 至 {{ promotionFilters.end }}</strong></span></div><div v-if="promotionHourlyLoading" class="empty-cell">正在加载真实推广日数据…</div><div v-else-if="promotionHourlyError" class="empty-cell">{{ promotionHourlyError }}</div><div v-else class="promotion-hourly-table-scroll"><table class="promotion-hourly-table"><thead><tr><th>数据日期</th><th>曝光量</th><th>点击量</th><th>成交笔数</th><th>花费(元)</th><th>交易额(元)</th><th>投产比</th></tr></thead><tbody><tr v-for="item in promotionHourlyRows" :key="`${item.date}-${item.hour}-${item.productId}`"><td>{{ item.date }}</td><td>{{ Number(item.impressions || 0).toLocaleString() }}</td><td>{{ Number(item.clicks || 0).toLocaleString() }}</td><td>{{ Number(item.orders || 0).toLocaleString() }}</td><td>{{ Number(item.spend || 0).toFixed(2) }}</td><td>{{ Number(item.revenue || 0).toFixed(2) }}</td><td :class="row.targetRoi != null && item.roi >= row.targetRoi ? 'rate-positive' : 'rate-neutral'">{{ Number(item.roi || 0).toFixed(2) }}</td></tr><tr v-if="!promotionHourlyRows.length"><td colspan="7" class="empty-cell">当前商品在所选日期范围内暂无推广日数据</td></tr></tbody></table></div></div><div v-else class="promotion-more-menu"><button type="button" @click="promotionNotice('已标记为重点观察')">标记为重点观察</button><button type="button" @click="promotionNotice('已打开调投产入口')">调整投产</button><button type="button" @click="promotionNotice('已复制商品 ID')">复制商品 ID</button><button type="button" class="danger" @click.stop="openRowDelistConfirm(row)">下架链接</button></div></div></td></tr></template><tr v-if="!promotionLoading && !pagedPromotionRows.length"><td :colspan="visiblePromotionColumns.length + 2" class="empty-cell">当前筛选条件下暂无推广商品</td></tr></tbody></table></div>
             <div class="promotion-table-footer"><span>第 {{ promotionPage }} / {{ promotionPages || 1 }} 页</span><label>每页<select v-model.number="promotionPageSize"><option :value="5">5 条</option><option :value="10">10 条</option><option :value="20">20 条</option></select></label><div class="link-pager"><button type="button" :disabled="promotionPage <= 1" @click="promotionPage -= 1">上一页</button><button type="button" :disabled="promotionPage >= promotionPages" @click="promotionPage += 1">下一页</button></div></div>
           </section>
         </section>
@@ -429,7 +436,7 @@
                 <div v-for="(filter, index) in linkFilters" :key="filter.id" class="link-filter-row">
                   <select v-model="filter.field" class="link-filter-field" @change="onLinkFilterFieldChange(filter)"><option value="">— 选择字段 —</option><option v-for="field in linkFilterFields" :key="field.key" :value="field.key">{{ field.label }}</option></select>
                   <select v-model="filter.op" class="link-filter-op" @change="normalizeLinkFilterOperator(filter)"><option v-if="linkFilterType(filter) === 'text'" value="contains">包含</option><option value="eq">=</option><option v-if="linkFilterType(filter) !== 'text'" value="between">区间</option><option v-if="linkFilterType(filter) !== 'text'" value="gte">≥</option><option v-if="linkFilterType(filter) !== 'text'" value="lte">≤</option></select>
-                  <select v-if="filter.field === '品牌'" v-model="filter.v1" class="link-filter-value link-brand-value" @change="applyLinkFilters"><option value="">选择品牌</option><option v-for="brand in brandOptions" :key="brand" :value="brand">{{ brand }}</option></select>
+                   <select v-if="filter.field === '品牌' || filter.field === '在售状态'" v-model="filter.v1" class="link-filter-value link-brand-value" @change="applyLinkFilters"><option value="">{{ filter.field === '在售状态' ? '选择商品状态' : '选择品牌' }}</option><option v-for="option in (filter.field === '在售状态' ? ['在售', '已下架'] : brandOptions)" :key="option" :value="option">{{ option }}</option></select>
                   <input v-else v-model="filter.v1" :type="linkFilterInputType(filter)" class="link-filter-value" :placeholder="linkFilterPlaceholder(filter)" @keyup.enter="applyLinkFilters" />
                   <input v-if="linkFilterUsesSecondValue(filter)" v-model="filter.v2" :type="linkFilterInputType(filter)" class="link-filter-value" placeholder="上限" @keyup.enter="applyLinkFilters" />
                   <button type="button" class="filter-remove-btn" title="移除此条件" @click="removeLinkFilter(index)">×</button>
@@ -459,6 +466,40 @@
 
         <section v-else-if="activeTab === 'admin'" class="admin-section">
           <section class="panel admin-header"><div><h2>管理中台</h2><p>集中维护链接维度的品牌、商品编码、商品名称与运营判断标准。</p></div></section>
+          <section class="panel operation-queue-panel" aria-labelledby="operation-queue-title">
+            <div class="panel-heading operation-queue-heading">
+              <div><h2 id="operation-queue-title">⏱ 操作任务队列</h2><p>统一查看调整投产和产品下架任务；系统按发起时间串行执行，同一时间只运行一个任务。</p></div>
+              <button type="button" class="button secondary compact" :disabled="operationQueueLoading" @click="loadOperationQueueNow">{{ operationQueueLoading ? '刷新中…' : '🔄 刷新队列' }}</button>
+            </div>
+            <div class="operation-queue-summary" aria-label="任务队列概览">
+              <div><span>执行中</span><strong>{{ operationQueue.summary.running || 0 }}</strong></div>
+              <div><span>排队中</span><strong>{{ operationQueue.summary.pending || 0 }}</strong></div>
+              <div><span>中断中</span><strong>{{ operationQueue.summary.cancelling || 0 }}</strong></div>
+              <div><span>已完成</span><strong>{{ operationQueue.summary.completed || 0 }}</strong></div>
+            </div>
+            <p v-if="operationQueueError" class="operation-queue-error" role="alert">{{ operationQueueError }}</p>
+            <div v-if="operationQueue.tasks.length" class="operation-task-list">
+              <article v-for="task in operationQueue.tasks" :key="task.id" class="operation-task-item">
+                <span class="operation-task-status" :class="operationTaskStatusTone(task.status)">{{ operationTaskStatusLabel(task.status) }}</span>
+                <div class="operation-task-main"><strong>{{ task.operation_label || task.operation_name }}</strong><code>{{ task.id }}</code><small>发起于 {{ task.created_at || '—' }}</small></div>
+                <div class="operation-task-detail"><span>{{ Number(task.count || 0).toLocaleString() }} 条链接</span><small :title="formatOperationStores(task)">{{ formatOperationStores(task) }}</small></div>
+                <div class="operation-task-position"><span>{{ operationTaskQueueHint(task) }}</span><small>{{ task.operator || '链接监控' }}</small></div>
+                <div v-if="operationTaskCanCancel(task)" class="operation-task-actions">
+                  <template v-if="operationInterruptConfirmId === task.id">
+                    <button type="button" class="button danger compact" :disabled="operationCancellingId === task.id" @click="interruptOperationTask(task)">{{ operationCancellingId === task.id ? '处理中…' : (task.status === 'pending' ? '确认取消' : '确认中断') }}</button>
+                    <button type="button" class="button secondary compact" :disabled="operationCancellingId === task.id" @click="operationInterruptConfirmId = ''">返回</button>
+                  </template>
+                  <button v-else type="button" class="button danger compact" @click="operationInterruptConfirmId = task.id">{{ task.status === 'pending' ? '取消排队' : '中断任务' }}</button>
+                </div>
+              </article>
+            </div>
+            <div v-else-if="!operationQueueLoading" class="operation-queue-empty">当前没有排队或执行中的任务</div>
+            <details v-if="operationQueue.history.length" class="operation-history">
+              <summary>最近任务记录（{{ operationQueue.history.length }}）</summary>
+              <div class="operation-history-list"><div v-for="task in operationQueue.history" :key="`history-${task.id}`"><span class="operation-task-status" :class="operationTaskStatusTone(task.status)">{{ operationTaskStatusLabel(task.status) }}</span><strong>{{ task.operation_label || task.operation_name }}</strong><code>{{ task.id }}</code><small>{{ task.completed_at || task.created_at || '—' }}</small></div></div>
+            </details>
+            <p class="operation-queue-note">说明：取消排队会立即生效；执行中任务会先提交中断请求，由 B 电脑监听器清理尚未执行完的触发文件。</p>
+          </section>
           <section class="panel standards-panel">
             <div class="panel-heading"><div><h2>🔗 链接设置</h2><p>通过“新增筛选维度”配置链接运营判断线，并为每条设置保存明细筛选条件</p></div><button class="button primary compact" @click="addStandardRow">＋ 新增设置</button></div>
             <div class="standards-table-scroll">
@@ -535,7 +576,7 @@
           </button>
         </div>
         <template v-if="promotionDrawerTab === 'trend'">
-           <div class="promotion-drawer-chart-head"><div><strong>{{ promotionSelectedKpiCard.label }}走势</strong><span>{{ promotionDrawerGranularityHint }} · {{ promotionRangeHint }}</span><small v-if="promotionDrawerHourlyLoading" class="promotion-drawer-hourly-status">正在读取推广小时数据…</small><small v-else-if="promotionDrawerHourlyError" class="promotion-drawer-hourly-status error">{{ promotionDrawerHourlyError }}</small></div><b>{{ promotionSelectedKpiCard.value }}</b></div>
+           <div class="promotion-drawer-chart-head"><div><strong>{{ promotionSelectedKpiCard.label }}走势</strong><span>{{ promotionDrawerGranularityHint }} · {{ promotionRangeHint }}</span><small v-if="promotionDrawerHourlyLoading" class="promotion-drawer-hourly-status">正在读取推广日数据…</small><small v-else-if="promotionDrawerHourlyError" class="promotion-drawer-hourly-status error">{{ promotionDrawerHourlyError }}</small></div><b>{{ promotionSelectedKpiCard.value }}</b></div>
            <div v-if="promotionDrawerHourlyRows.length" class="promotion-hourly-chart">
              <svg viewBox="0 0 920 270" role="img" :aria-label="`${promotionSelectedKpiCard.label}当前周期与对比周期趋势图`" preserveAspectRatio="none" @pointermove="handlePromotionTrendPointerMove" @mouseleave="hidePromotionTrendTooltip">
                <line v-for="line in promotionTrendGridLines" :key="line.y" x1="0" :y1="line.y + 28" x2="920" :y2="line.y + 28" class="promotion-trend-grid-line" />
@@ -567,18 +608,19 @@
     <div v-if="adjustModalOpen" class="modal-backdrop" @click.self="closePromotionAdjust">
       <section class="promotion-adjust-modal panel" role="dialog" aria-modal="true" aria-labelledby="promotion-adjust-title">
         <div class="modal-header">
-          <div><h2 id="promotion-adjust-title">📊 调整投产</h2><p>已选择 {{ selectedOperationIds.length }} 条链接，请确认调整范围</p></div>
+          <div><h2 id="promotion-adjust-title">📊 调整投产</h2><p>已选择 {{ promotionAdjustOperationIds.length }} 条链接，请确认调整范围</p></div>
           <button type="button" class="modal-close" aria-label="关闭弹窗" :disabled="adjustingPromotion" @click="closePromotionAdjust">×</button>
         </div>
         <div class="adjust-selection-list">
-          <div v-for="item in selectedLinkRows" :key="item.linkId" class="adjust-selection-item"><code>{{ item.linkId }}</code><span>{{ item.storeName || '未识别店铺' }}</span></div>
+          <div v-for="item in selectedAdjustLinkRows" :key="item.linkId" class="adjust-selection-item"><code>{{ item.linkId }}</code><span>{{ item.storeName || '未识别店铺' }}</span></div>
         </div>
          <div class="adjust-form">
            <fieldset class="adjust-preset-fieldset"><legend>选择调整档次</legend><div class="adjust-preset-grid" role="radiogroup" aria-label="投产调整档次"><label v-for="preset in promotionAdjustPresets" :key="preset.key" class="adjust-preset" :class="{ 'is-selected': adjustPreset === preset.value }"><input v-model="adjustPreset" type="radio" name="promotion-adjust-preset" :value="preset.value" /><span class="adjust-preset-copy"><strong>{{ preset.label }}</strong><small>{{ preset.display }}</small></span></label></div></fieldset>
            <p class="adjust-preset-hint">提交后将按选中的档次上调投产比。</p>
          </div>
+        <fieldset class="operation-schedule-fieldset"><legend>执行方式</legend><div class="operation-schedule-options" role="radiogroup" aria-label="调整投产执行方式"><label><input v-model="adjustScheduleMode" type="radio" name="promotion-adjust-schedule-mode" value="immediate" /> 立即执行</label><label><input v-model="adjustScheduleMode" type="radio" name="promotion-adjust-schedule-mode" value="scheduled" /> 定时执行</label></div><label v-if="adjustScheduleMode === 'scheduled'" class="operation-schedule-input">执行时间 <input v-model="adjustScheduledAt" type="datetime-local" :min="minimumScheduleDateTime" /></label><small>定时任务会先进入队列，到达指定时间后由 B 电脑监听器触发原有影刀流程。</small></fieldset>
         <p v-if="adjustMessage" class="adjust-message">{{ adjustMessage }}</p>
-        <div class="modal-actions"><button type="button" class="button secondary" :disabled="adjustingPromotion" @click="closePromotionAdjust">取消</button><button type="button" class="button primary" :disabled="adjustingPromotion" @click="submitPromotionAdjust">{{ adjustingPromotion ? '提交中…' : '确定提交' }}</button></div>
+        <div class="modal-actions"><button type="button" class="button secondary" :disabled="adjustingPromotion" @click="closePromotionAdjust">取消</button><button type="button" class="button primary" :disabled="adjustingPromotion" @click="submitPromotionAdjust">{{ adjustingPromotion ? '提交中…' : (adjustScheduleMode === 'scheduled' ? '确认定时' : '立即提交') }}</button></div>
       </section>
     </div>
     <div v-if="delistConfirmOpen" class="modal-backdrop" @click.self="closeDelistConfirm">
@@ -594,14 +636,15 @@
             <div><span>链接 ID</span><code>{{ item.linkId }}</code></div>
           </div>
         </div>
+        <fieldset class="operation-schedule-fieldset"><legend>执行方式</legend><div class="operation-schedule-options" role="radiogroup" aria-label="产品下架执行方式"><label><input v-model="delistScheduleMode" type="radio" name="delist-schedule-mode" value="immediate" /> 立即执行</label><label><input v-model="delistScheduleMode" type="radio" name="delist-schedule-mode" value="scheduled" /> 定时执行</label></div><label v-if="delistScheduleMode === 'scheduled'" class="operation-schedule-input">执行时间 <input v-model="delistScheduledAt" type="datetime-local" :min="minimumScheduleDateTime" /></label><small>定时任务会先进入队列，到达指定时间后由 B 电脑监听器触发原有影刀流程。</small></fieldset>
         <p v-if="delistMessage" class="adjust-message">{{ delistMessage }}</p>
-        <div class="modal-actions"><button type="button" class="button secondary" :disabled="delisting" @click="closeDelistConfirm">取消</button><button type="button" class="button danger" :disabled="delisting" @click="submitSelectedLinks">{{ delisting ? '提交中…' : '确认下架' }}</button></div>
+        <div class="modal-actions"><button type="button" class="button secondary" :disabled="delisting" @click="closeDelistConfirm">取消</button><button type="button" class="button danger" :disabled="delisting" @click="submitSelectedLinks">{{ delisting ? '提交中…' : (delistScheduleMode === 'scheduled' ? '确认定时' : '确认下架') }}</button></div>
       </section>
     </div>
     <div v-if="promotionHelpOpen || promotionReportOpen" class="modal-backdrop" @click.self="promotionHelpOpen = promotionReportOpen = false">
       <section class="promotion-info-modal panel" role="dialog" aria-modal="true">
-        <div class="modal-header"><div><h2>{{ promotionHelpOpen ? '商品推广说明' : '推广数据口径' }}</h2><p>{{ promotionHelpOpen ? '商品推广页的前端交互入口已按推广平台结构预留。' : '用于确认日表与未来分小时推广表的字段边界。' }}</p></div><button type="button" class="modal-close" aria-label="关闭" @click="promotionHelpOpen = promotionReportOpen = false">×</button></div>
-        <div v-if="promotionHelpOpen" class="promotion-info-list"><p>• 时间范围使用“数据日期”，支持今日、昨日、近 7 日、近 30 日和近 90 日。</p><p>• 搜索支持推广名称、商品名称、商品 ID，多个 ID 可用逗号或空格分隔。</p><p>• 商品行的“详情 / 数据 / 更多”分别对应基础信息、小时数据面板和运营动作入口。</p></div>
+        <div class="modal-header"><div><h2>{{ promotionHelpOpen ? '商品推广说明' : '推广数据口径' }}</h2><p>{{ promotionHelpOpen ? '商品推广页的前端交互入口已按推广平台结构预留。' : '推广数据来自“商品_分天数据”工作表，按店铺、商品 ID、数据日期汇总。' }}</p></div><button type="button" class="modal-close" aria-label="关闭" @click="promotionHelpOpen = promotionReportOpen = false">×</button></div>
+        <div v-if="promotionHelpOpen" class="promotion-info-list"><p>• 时间范围使用“数据日期”，支持今日、昨日、近 7 日、近 30 日和近 90 日。</p><p>• 搜索支持推广名称、商品名称、商品 ID，多个 ID 可用逗号或空格分隔。</p><p>• 商品行的“详情 / 数据 / 更多”分别对应基础信息、每日推广数据和运营动作入口。</p></div>
         <div v-else class="promotion-info-list"><p>• 当前商品推广列表复用看板已有商品/链接数据生成前端演示行。</p><p>• 未来接入推广数据表时，建议使用“数据日期 + 小时 + 商品 ID”作为明细粒度。</p><p>• 花费、交易额、投产比等字段保留独立口径，避免与利润表聚合结果混用。</p></div>
       </section>
     </div>
@@ -617,7 +660,7 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, nextTick, onMounted, reactive, ref, watch } from 'vue';
+import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import ChartPanel from './components/ChartPanel.vue';
 import { useProfitData } from './composables/useProfitData';
 
@@ -641,7 +684,7 @@ const colorTokens = Object.freeze({
 });
 const brandColors = Object.freeze({ 浪奇: colorTokens.blue, 白牌: colorTokens.gray, 威王: colorTokens.green, 舒蕾: colorTokens.purple });
 
-const { data, status, targets, standards, loading, error, lastUpdated, links, linksMeta, linksLoading, linkFields: linkFieldsRef, linkDashboard, linkDashboardLoading, linkSummary, linkSummaryLoading, availableDates, loadAll, loadPromotionSummary, loadLinkOperatingSummary, loadPromotionHourly, refresh, queryLinks, loadLinks, loadLinkDashboard, loadLinkSummary, saveTargets, saveStandard, deleteStandard, submitDelist, submitPromotionAdjust: sendPromotionAdjust } = useProfitData();
+const { data, status, targets, standards, loading, error, lastUpdated, links, linksMeta, linksLoading, linkFields: linkFieldsRef, linkDashboard, linkDashboardLoading, linkSummary, linkSummaryLoading, availableDates, loadAll, loadPromotionSummary, loadLinkOperatingSummary, loadPromotionHourly, refresh, queryLinks, loadLinks, loadLinkDashboard, loadLinkSummary, saveTargets, saveStandard, deleteStandard, submitDelist, submitPromotionAdjust: sendPromotionAdjust, loadOperationQueue: fetchOperationQueue, cancelOperationTask } = useProfitData();
 // 字段接口首次加载或热更新期间可能暂时没有返回 ref；当前数据库字段仍由 linkFieldOrder 提供完整兜底。
 const linkFields = linkFieldsRef || ref([]);
 const activeTab = ref('promotion');
@@ -658,6 +701,12 @@ const analysisDimension = ref('brand');
 const analysisMetric = ref('profitRate');
 const standardRows = ref([]);
 let standardFilterId = 0;
+const operationQueue = ref({ tasks: [], history: [], summary: { pending: 0, running: 0, cancelling: 0, completed: 0, failed: 0, cancelled: 0 } });
+const operationQueueLoading = ref(false);
+const operationQueueError = ref('');
+const operationCancellingId = ref('');
+const operationInterruptConfirmId = ref('');
+let operationQueueTimer = null;
 const showPersonLines = ref(false);
 const focusedProfitRateSeries = ref(null);
 const focusedProductProfitSeries = ref(null);
@@ -667,23 +716,36 @@ const targetMessage = ref('');
 const selectedLinks = ref([]);
 const adjustModalOpen = ref(false);
 const adjustingPromotion = ref(false);
+const promotionAdjustTargetIds = ref([]);
+const adjustScheduleMode = ref('immediate');
+const adjustScheduledAt = ref('');
 const delistConfirmOpen = ref(false);
 const delisting = ref(false);
 const delistMessage = ref('');
 const delistTargetIds = ref([]);
+const delistScheduleMode = ref('immediate');
+const delistScheduledAt = ref('');
  const promotionAdjustPresets = Object.freeze([
    { key: 'maintenance-005', label: '日常维护', display: '+0.05', value: 0.05 },
    { key: 'serious-loss-01', label: '亏损严重', display: '+0.1', value: 0.1 },
    { key: 'serious-loss-02', label: '亏损严重', display: '+0.2', value: 0.2 },
    { key: 'maintenance-001', label: '日常维护', display: '+0.01', value: 0.01 },
  ]);
- const adjustPreset = ref(0.05);
+const adjustPreset = ref(0.05);
 const adjustMessage = ref('');
+const minimumScheduleDateTime = computed(() => {
+  const now = new Date();
+  now.setSeconds(0, 0);
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
+});
 const promotionDatePresets = Object.freeze([{ key: 'today', label: '今日' }, { key: 'yesterday', label: '昨日' }, { key: '7d', label: '近 7 日' }, { key: '30d', label: '近 30 日' }, { key: '90d', label: '近 90 日' }]);
 const promotionDatePreset = ref('30d');
 const promotionFilters = reactive({ start: '', end: '', search: '', status: '', bidType: '', stage: '', brand: '' });
 const promotionLoading = ref(false);
 const promotionRows = ref([]);
+// 链接经营接口返回的是当前筛选范围的全量汇总，卡片不能只依赖页面行重新累加。
+const promotionApiSummary = ref({});
 const promotionPage = ref(1);
 const promotionPageSize = ref(10);
 const promotionColumnsOpen = ref(false);
@@ -749,7 +811,7 @@ const linkSummaryDailyRows = ref([]);
 const linkSummaryDailyLoading = ref(false);
 const linkSummaryDailyError = ref('');
 const brandOptions = Object.freeze(['浪奇', '威王', '舒蕾', '白牌']);
-const globalFilters = reactive({ link_ids: '', product_code: '', product_name: '', orders: '', brand: '', store_name: '', store_person: '' });
+const globalFilters = reactive({ link_ids: '', product_code: '', product_name: '', orders: '', brand: '', store_name: '', store_person: '', sale_status: '' });
 const linkDataDateStart = ref('');
 const linkDataDateEnd = ref('');
 const linkDataLinkIds = ref('');
@@ -1238,15 +1300,15 @@ const productColumns = [
   { key: 'profitRate', label: '利润率', format: (v) => `${Number(v || 0).toFixed(2)}%`, tone: 'rate' },
 ];
 const linkFieldOrder = [
-  '链接id', '链接创建时间', '商品编码', '商品标题', '店铺名称', '品牌', '负责人', '数据日期', '单量', '收入', '成本', '成本占比', '快递', '快递占比', '成本+快递', '货品快递总和占比', '毛利', '毛利率', '技术服务费', '预估售后', '推广费', '推广费占比', '平台利润', '利润率', '运费险', '税费', '来源文件',
+  '链接id', '链接创建时间', '在售状态', '商品编码', '商品标题', '店铺名称', '品牌', '负责人', '数据日期', '单量', '收入', '成本', '成本占比', '快递', '快递占比', '成本+快递', '货品快递总和占比', '毛利', '毛利率', '技术服务费', '预估售后', '推广费', '推广费占比', '平台利润', '利润率', '运费险', '税费', '来源文件',
   '出价方式', '商品名称', 'store', '推广来源文件', '总花费(元)', '交易额(元)', '净交易额(元)', '净成交笔数', '成交笔数', '直接交易额(元)', '间接交易额(元)', '直接成交笔数', '间接成交笔数', '曝光量', '点击量', '询单花费(元)', '询单量', '收藏花费(元)', '收藏量', '关注花费(元)', '关注量', '平均收藏成本(元)', '平均关注成本(元)', '平均询单成本(元)', '全站推广费比', '净交易额占比', '实际投产比', '净实际投产比', '每笔净成交花费(元)', '每笔成交花费(元)', '每笔成交金额(元)', '每笔直接成交金额(元)', '每笔间接成交金额(元)', '推广数据匹配',
 ];
 const linkPercentFields = new Set(['成本占比', '快递占比', '货品快递总和占比', '毛利率', '推广费占比', '利润率', '全站推广费比', '净交易额占比']);
-const linkFieldLabels = Object.freeze({ 链接id: '链接 ID', 链接创建时间: '链接创建时间', 店铺名称: '店铺', 数据日期: '日期', 推广费占比: '推广占比', 推广数据匹配: '推广数据匹配' });
+const linkFieldLabels = Object.freeze({ 链接id: '链接 ID', 链接创建时间: '链接创建时间', 在售状态: '商品状态', 店铺名称: '店铺', 数据日期: '日期', 推广费占比: '推广占比', 推广数据匹配: '推广数据匹配' });
 const linkColumnOptions = computed(() => {
   const apiFields = linkFields.value || [];
   const apiMap = new Map(apiFields.map((field) => [field.key, field]));
-  const keys = apiFields.length ? linkFieldOrder.filter((key) => key === '品牌' || apiMap.has(key)) : linkFieldOrder;
+  const keys = apiFields.length ? linkFieldOrder.filter((key) => key === '品牌' || key === '在售状态' || apiMap.has(key)) : linkFieldOrder;
   const extras = apiFields.map((field) => field.key).filter((key) => key !== 'id' && !keys.includes(key));
   return [...keys, ...extras].map((key) => {
     const apiField = apiMap.get(key);
@@ -1357,6 +1419,7 @@ const promotionColumns = Object.freeze([
   { key: 'linkId', label: '链接 ID', tone: 'promotion-id-cell' },
   { key: 'productCode', label: '商品编码' },
   { key: 'createdAt', label: '链接创建时间' },
+  { key: 'saleStatus', label: '商品状态' },
   { key: 'person', label: '负责人' },
   { key: 'profitOrders', label: '利润单量', tone: 'number' },
   { key: 'orderAmount', label: '订单金额(元)', tone: 'number' },
@@ -1408,7 +1471,7 @@ const promotionColumns = Object.freeze([
   { key: 'dataDays', label: '数据天数', tone: 'number' },
 ]);
 const promotionColumnGroupDefinitions = Object.freeze([
-  { key: 'link', label: '链接信息', keys: ['storeName', 'imageUrl', 'title', 'linkId', 'productCode', 'createdAt', 'person'] },
+  { key: 'link', label: '链接信息', keys: ['storeName', 'imageUrl', 'title', 'linkId', 'productCode', 'createdAt', 'saleStatus', 'person'] },
   { key: 'profit', label: '利润数据', keys: ['profitOrders', 'orderAmount', 'refundAmount', 'goodsCost', 'shippingCost', 'afterRefundOrderAmount', 'afterReturnOrderAmount', 'afterReturnGoodsCost', 'costPct', 'afterReturnShippingCost', 'goodsShippingTotal', 'goodsShippingPct', 'remoteSurcharge', 'grossProfit', 'grossMargin', 'platformProfit', 'profitRate'] },
   { key: 'promotion', label: '推广数据', keys: ['promotionSpend', 'promotionTotalSpend', 'promotionRevenue', 'promotionRoi', 'promotionNetRoi', 'promotionNetRevenue', 'promotionNetOrders', 'promotionAvgNetOrderSpend', 'promotionNetRevenueRatio', 'promotionNetOrdersRatio', 'promotionAvgNetOrderRevenue', 'settledRevenue', 'settledRoi', 'settledOrders', 'refundExemptionRate', 'cancelExemptionRate', 'settledAvgOrderSpend', 'revenueSettlementRate', 'orderSettlementRate', 'settledAvgOrderRevenue', 'promotionOrders', 'promotionAvgOrderSpend', 'promotionAvgOrderRevenue', 'directRevenue', 'indirectRevenue', 'directOrders', 'indirectOrders'] },
   { key: 'traffic', label: '流量数据', keys: ['impressions', 'clicks', 'sitePromotionRatio', 'dataDays'] },
@@ -1564,24 +1627,35 @@ const promotionRangeHint = computed(() => `${promotionFilters.start || '—'} �
 const promotionDataCutoff = computed(() => promotionFilters.end && promotionFilters.end === availableDates.value.at(-1) ? '当前数据日' : '已结算数据');
 const promotionSummary = computed(() => {
   const rows = promotionRows.value;
-  const spend = rows.reduce((sum, row) => sum + Number(row.promotionSpend || 0), 0);
-  const revenue = rows.reduce((sum, row) => sum + Number(row.promotionRevenue || 0), 0);
-  const orders = rows.reduce((sum, row) => sum + Number(row.promotionNetOrders || 0), 0);
+  const fallback = (key) => rows.reduce((sum, row) => sum + Number(row[key] || 0), 0);
+  const summary = promotionApiSummary.value || {};
+  const fromApi = (key, fallbackValue) => Object.prototype.hasOwnProperty.call(summary, key)
+    ? Number(summary[key] || 0)
+    : fallbackValue;
+  const spend = fromApi('spend', fallback('promotionSpend'));
+  const revenue = fromApi('revenue', fallback('promotionRevenue'));
+  const orders = fromApi('promotionNetOrders', fallback('promotionNetOrders'));
   return { spend, revenue, orders, orderedProducts: rows.filter((row) => Number(row.promotionNetOrders || 0) > 0).length, roi: spend ? revenue / spend : 0 };
 });
 const promotionKpiCards = computed(() => {
   const rows = promotionRows.value;
+  const apiSummary = promotionApiSummary.value || {};
   const total = (key) => rows.reduce((sum, row) => sum + Number(row[key] || 0), 0);
-  const spend = promotionSummary.value.spend;
-  const revenue = promotionSummary.value.revenue;
-  const clicks = total('clicks');
-  const impressions = total('impressions');
+  const summaryTotal = (summaryKey, rowKey) => Object.prototype.hasOwnProperty.call(apiSummary, summaryKey)
+    ? Number(apiSummary[summaryKey] || 0)
+    : total(rowKey);
+  const spend = summaryTotal('spend', 'promotionSpend');
+  const revenue = summaryTotal('revenue', 'promotionRevenue');
+  // 推广交易额来自推广事实表；订单收入单独绑定利润率表 orderAmount。
+  const orderAmount = summaryTotal('orderAmount', 'orderAmount');
+  const clicks = summaryTotal('clicks', 'clicks');
+  const impressions = summaryTotal('impressions', 'impressions');
   const orders = promotionSummary.value.orders;
   const avgClickCost = clicks ? spend / clicks : 0;
   const avgOrderCost = orders ? spend / orders : 0;
   const conversionRate = clicks ? orders / clicks * 100 : 0;
   const clickRate = impressions ? clicks / impressions * 100 : 0;
-  const netRevenue = total('promotionNetRevenue');
+  const netRevenue = summaryTotal('netRevenue', 'promotionNetRevenue');
   const directRevenue = total('directRevenue');
   const indirectRevenue = total('indirectRevenue');
   const favorites = total('favorites');
@@ -1590,7 +1664,8 @@ const promotionKpiCards = computed(() => {
   const summary = linkSummaryTotals.value;
   return [
     { key: 'spend', label: '成交花费', value: formatPromotionMoney(spend), note: `推广商品 ${rows.length.toLocaleString()} 个` },
-    { key: 'revenue', label: '交易额', value: formatPromotionMoney(revenue), note: `净成交笔数 ${orders.toLocaleString()}` },
+    { key: 'revenue', label: '推广交易额', value: formatPromotionMoney(revenue), note: `净成交笔数 ${orders.toLocaleString()}` },
+    { key: 'orderAmount', label: '订单收入', value: formatPromotionMoney(orderAmount), note: '利润率表 orderAmount 合计' },
     { key: 'roi', label: '实际投产比', value: promotionSummary.value.roi.toFixed(2), note: '交易额 ÷ 成交花费' },
     { key: 'netRevenue', label: '净交易额', value: formatPromotionMoney(netRevenue), note: '剔除退款后的交易额' },
     { key: 'netRoi', label: '净实际投产比', value: spend ? (netRevenue / spend).toFixed(2) : '0.00', note: '净交易额 ÷ 成交花费' },
@@ -1730,11 +1805,12 @@ function promotionMetricSource(item = {}, fallback = {}) {
   const netRevenue = Number(item.netRevenue ?? item.promotionNetRevenue ?? item.net_revenue ?? revenue);
   const directRevenue = Number(item.directRevenue ?? item.direct_revenue ?? 0);
   const indirectRevenue = Number(item.indirectRevenue ?? item.indirect_revenue ?? 0);
+  const orderAmount = Number(item.orderAmount ?? item.summaryRevenue ?? fallback.orderAmount ?? 0);
   return {
-    spend, revenue, orders, clicks, impressions, netRevenue, directRevenue, indirectRevenue,
+    spend, revenue, orders, clicks, impressions, netRevenue, directRevenue, indirectRevenue, orderAmount,
     favorites: Number(item.favorites || 0), follows: Number(item.follows || 0), inquiries: Number(item.inquiries || 0),
     summaryLinks: Number(item.summaryLinks ?? 1),
-    summaryRevenue: Number(item.summaryRevenue ?? item.orderAmount ?? 0),
+    summaryRevenue: Number(item.summaryRevenue ?? orderAmount),
     summaryCost: Number(item.summaryCost ?? item.goodsCost ?? 0),
     summaryGrossProfit: Number(item.summaryGrossProfit ?? item.grossProfit ?? 0),
     summaryPromotion: Number(item.summaryPromotion ?? item.profitPromotionFee ?? 0),
@@ -1744,7 +1820,7 @@ function promotionMetricSource(item = {}, fallback = {}) {
 function promotionMetricValue(metric, source) {
   const clickRate = source.impressions ? source.clicks / source.impressions * 100 : 0;
   const conversionRate = source.clicks ? source.orders / source.clicks * 100 : 0;
-  return { spend: source.spend, revenue: source.revenue, roi: source.spend ? source.revenue / source.spend : 0, netRevenue: source.netRevenue, netRoi: source.spend ? source.netRevenue / source.spend : 0, orders: source.orders, avgOrderCost: source.orders ? source.spend / source.orders : 0, avgClickCost: source.clicks ? source.spend / source.clicks : 0, impressions: source.impressions, clicks: source.clicks, clickRate, conversionRate, directRevenue: source.directRevenue, indirectRevenue: source.indirectRevenue, favorites: source.favorites, follows: source.follows, inquiries: source.inquiries, summaryLinks: source.summaryLinks, summaryRevenue: source.summaryRevenue, summaryCost: source.summaryCost, summaryGrossProfit: source.summaryGrossProfit, summaryPromotion: source.summaryPromotion, summaryPlatformProfit: source.summaryPlatformProfit }[metric] || 0;
+  return { spend: source.spend, revenue: source.revenue, orderAmount: source.orderAmount, roi: source.spend ? source.revenue / source.spend : 0, netRevenue: source.netRevenue, netRoi: source.spend ? source.netRevenue / source.spend : 0, orders: source.orders, avgOrderCost: source.orders ? source.spend / source.orders : 0, avgClickCost: source.clicks ? source.spend / source.clicks : 0, impressions: source.impressions, clicks: source.clicks, clickRate, conversionRate, directRevenue: source.directRevenue, indirectRevenue: source.indirectRevenue, favorites: source.favorites, follows: source.follows, inquiries: source.inquiries, summaryLinks: source.summaryLinks, summaryRevenue: source.summaryRevenue, summaryCost: source.summaryCost, summaryGrossProfit: source.summaryGrossProfit, summaryPromotion: source.summaryPromotion, summaryPlatformProfit: source.summaryPlatformProfit }[metric] || 0;
 }
 function formatPromotionMetricDisplay(metric, value) {
   const amount = Number(value || 0);
@@ -1759,7 +1835,7 @@ function promotionMetricTotalsFromRows(rows, summaryOverride = null) {
   const linkIds = new Set(rows.map((row) => String(row.linkId || '')).filter((id) => id && !id.includes(':')));
   const total = (key) => rows.reduce((sum, row) => sum + Number(row[key] || 0), 0);
   return promotionMetricSource({
-    spend: total('promotionSpend'), revenue: total('promotionRevenue'), orders: total('promotionNetOrders'),
+    spend: total('promotionSpend'), revenue: total('promotionRevenue'), orderAmount: total('orderAmount'), orders: total('promotionNetOrders'),
     clicks: total('clicks'), impressions: total('impressions'), netRevenue: total('promotionNetRevenue'),
     directRevenue: total('directRevenue'), indirectRevenue: total('indirectRevenue'), favorites: total('favorites'),
     follows: total('follows'), inquiries: total('inquiries'),
@@ -1910,7 +1986,7 @@ watch([promotionKpiCards, promotionRowDrawerCards], ([mainCards, drawerCards]) =
   ensurePromotionCardOrder([...mainCards, ...drawerCards]);
 }, { immediate: true });
 const promotionExpandedRow = computed(() => promotionDimensionRows.value.find((item) => item.linkId === promotionExpandedKey.value) || null);
-// 这些字段来自推广小时事实表；利润表字段仍然使用原来的日粒度数据。
+// 这些字段来自推广日事实表；利润表字段仍然使用原来的日粒度数据。
 const promotionHourlyMetricKeys = new Set([
   'promotionSpend', 'promotionTotalSpend', 'promotionRevenue', 'promotionRoi', 'promotionNetRoi', 'promotionNetRevenue',
   'promotionNetOrders', 'promotionAvgNetOrderSpend', 'promotionNetRevenueRatio', 'promotionNetOrdersRatio', 'promotionAvgNetOrderRevenue',
@@ -2063,7 +2139,7 @@ const promotionDrawerHasHourlySource = computed(() => Boolean(promotionDrawerMod
   && promotionDrawerHourlyLoaded.value
   && (promotionDrawerHourlySourceRows.value.length || promotionDrawerPreviousHourlySourceRows.value.length)));
 const promotionDrawerUsesHourlyMetric = computed(() => promotionDrawerHasHourlySource.value && promotionHourlyMetricKeys.has(promotionSelectedKpi.value));
-const promotionDrawerGranularityHint = computed(() => promotionDrawerUsesHourlyMetric.value ? '推广小时数据（日期 + 小时）' : '利润日数据（数据日期）');
+const promotionDrawerGranularityHint = computed(() => promotionDrawerUsesHourlyMetric.value ? '推广日数据（数据日期）' : '利润日数据（数据日期）');
 const promotionDrawerTimeColumnLabel = computed(() => promotionDrawerUsesHourlyMetric.value ? '数据日期 + 小时' : '数据日期');
 const promotionDrawerComparisonColumnLabel = computed(() => promotionDrawerUsesHourlyMetric.value ? '对比日期 + 小时' : '对比日期');
 const promotionDrawerHourlyRows = computed(() => {
@@ -2502,7 +2578,7 @@ function promotionDateBounds(days = 30) {
 function standardFilterRowValue(row, field) {
   const aliases = {
     '链接id': 'linkId', '链接 ID': 'linkId', '商品编码': 'productCode', '商品名称': 'title', '商品标题': 'title',
-    '店铺名称': 'storeName', '品牌': 'brand', '负责人': 'person', '链接创建时间': 'createdAt', '数据日期': 'lastDate',
+    '店铺名称': 'storeName', '品牌': 'brand', '负责人': 'person', '链接创建时间': 'createdAt', '在售状态': 'saleStatus', '是否在售': 'saleStatus', '数据日期': 'lastDate',
     '单量': 'profitOrders', '利润单量': 'profitOrders', '收入': 'orderAmount', '订单金额': 'orderAmount', '订单金额(元)': 'orderAmount',
     '毛利': 'grossProfit', '毛利率': 'grossMargin', '平台利润': 'platformProfit', '利润率': 'profitRate',
     '推广费': 'profitPromotionFee', '推广费占比': 'profitPromotionPct', '成交花费': 'promotionSpend', '实际投产比': 'promotionRoi',
@@ -2580,11 +2656,13 @@ async function rebuildPromotionRows() {
       brand: promotionFilters.brand || globalFilters.brand,
       store_name: globalFilters.store_name,
       store_person: globalFilters.store_person,
+      sale_status: globalFilters.sale_status,
       ...creationParams(),
       ...ordersFilterParams(),
       filter_json: globalCustomFilterJson(),
     });
     if (!response?.success) throw new Error(response?.error || '链接经营数据加载失败');
+    promotionApiSummary.value = response.summary || {};
     const rows = filterPromotionRowsByPreset((response.data || []).filter((row) => {
       if (promotionFilters.status && row.status !== promotionFilters.status) return false;
       if (promotionFilters.stage && row.stage !== promotionFilters.stage) return false;
@@ -2596,6 +2674,7 @@ async function rebuildPromotionRows() {
     await rebuildPromotionComparison();
   } catch (err) {
     promotionRows.value = [];
+    promotionApiSummary.value = {};
     promotionComparisonRows.value = [];
     promotionNotice(err.message || '推广数据加载失败');
   } finally {
@@ -2619,6 +2698,7 @@ async function rebuildPromotionComparison() {
     brand: promotionFilters.brand || globalFilters.brand,
     store_name: globalFilters.store_name,
     store_person: globalFilters.store_person,
+    sale_status: globalFilters.sale_status,
     orders: globalFilters.orders,
     creation: creationParams(),
     customFilters: activeLinkPresetFilters.value,
@@ -2640,6 +2720,7 @@ async function rebuildPromotionComparison() {
       brand: promotionFilters.brand || globalFilters.brand,
       store_name: globalFilters.store_name,
       store_person: globalFilters.store_person,
+      sale_status: globalFilters.sale_status,
       ...creationParams(),
       ...ordersFilterParams(),
       filter_json: globalCustomFilterJson(),
@@ -2698,7 +2779,7 @@ async function togglePromotionDetails(row, mode) {
     promotionHourlySourceRows.value = response?.data || [];
     promotionHourDate.value = promotionHourlyDates.value[0] || 'all';
   } catch (err) {
-    promotionHourlyError.value = err.message || '分小时数据加载失败';
+    promotionHourlyError.value = err.message || '推广日数据加载失败';
   } finally {
     promotionHourlyLoading.value = false;
   }
@@ -2729,13 +2810,13 @@ async function loadPromotionDrawerHourlyData(row) {
       previousRange.start && previousRange.end ? loadPromotionHourly(params(previousRange)) : Promise.resolve({ success: true, data: [] }),
     ]);
     if (requestKey !== promotionDrawerHourlyRequestKey.value) return;
-    if (!currentResponse?.success) throw new Error(currentResponse?.error || '当前周期推广小时数据加载失败');
-    if (!previousResponse?.success) throw new Error(previousResponse?.error || '对比周期推广小时数据加载失败');
+    if (!currentResponse?.success) throw new Error(currentResponse?.error || '当前周期推广日数据加载失败');
+    if (!previousResponse?.success) throw new Error(previousResponse?.error || '对比周期推广日数据加载失败');
     promotionDrawerHourlySourceRows.value = currentResponse.data || [];
     promotionDrawerPreviousHourlySourceRows.value = previousResponse.data || [];
     promotionDrawerHourlyLoaded.value = true;
   } catch (err) {
-    if (requestKey === promotionDrawerHourlyRequestKey.value) promotionDrawerHourlyError.value = err.message || '推广小时数据加载失败';
+    if (requestKey === promotionDrawerHourlyRequestKey.value) promotionDrawerHourlyError.value = err.message || '推广日数据加载失败';
   } finally {
     if (requestKey === promotionDrawerHourlyRequestKey.value) promotionDrawerHourlyLoading.value = false;
   }
@@ -2838,7 +2919,10 @@ function toggleGoalNode(key) { const next = new Set(expandedGoalNodes.value); if
 function setRange(preset) { rangePreset.value = preset; const dates = availableDates.value; if (!dates.length) return; const end = dates.at(-1); if (preset === 'all') { dateStart.value = dates[0]; dateEnd.value = end; } else if (preset === 'month') { const month = end.slice(0, 7); const inMonth = dates.filter((date) => date.startsWith(month)); dateStart.value = inMonth[0]; dateEnd.value = inMonth.at(-1); } else { const days = preset === 'yesterday' ? 1 : preset === '3d' ? 3 : preset === '14d' ? 14 : preset === '30d' ? 30 : 7; dateStart.value = dates[Math.max(0, dates.length - days)]; dateEnd.value = end; } }
 function creationParams() { if (creationFilter.mode === 'custom') return { creation_start: creationFilter.start, creation_end: creationFilter.end }; return { creation_days: Math.max(1, Number(creationFilter.days || 1)) }; }
 function ordersFilterParams() {
-  const orders = Number(String(globalFilters.orders || '').trim());
+  const rawOrders = String(globalFilters.orders ?? '').trim();
+  // 输入框为空代表“不按单量筛选”；只有用户明确输入 0，才执行单量等于 0 的筛选。
+  if (!rawOrders) return {};
+  const orders = Number(rawOrders);
   if (!Number.isFinite(orders) || orders < 0) return {};
   return { orders_gte: orders, orders_lte: orders };
 }
@@ -2853,13 +2937,14 @@ function globalFilterParams() {
     product_code: globalFilters.product_code.trim(),
     product_name: globalFilters.product_name.trim(),
     brand: globalFilters.brand,
+    sale_status: globalFilters.sale_status,
     store_name: globalFilters.store_name.trim(),
     store_person: globalFilters.store_person,
     filter_json: globalCustomFilterJson(),
   };
 }
 async function applyRange() { if (dateStart.value > dateEnd.value) [dateStart.value, dateEnd.value] = [dateEnd.value, dateStart.value]; if (creationFilter.mode === 'custom' && creationFilter.start && creationFilter.end && creationFilter.start > creationFilter.end) [creationFilter.start, creationFilter.end] = [creationFilter.end, creationFilter.start]; linkDataDateStart.value = dateStart.value; linkDataDateEnd.value = dateEnd.value; rangePreset.value = ''; await loadAll(globalFilterParams()); if (activeTab.value === 'promotion') await refreshPromotionLinkViews(); else await refreshLinkViews(); }
-async function clearGlobalFilters() { Object.assign(globalFilters, { link_ids: '', product_code: '', product_name: '', orders: '', brand: '', store_name: '', store_person: '' }); Object.assign(creationFilter, { mode: 'age', days: 30, start: '', end: '' }); activeLinkPresetId.value = ''; activeLinkPresetFilters.value = []; linkFilters.splice(0); expandedLinkSummaryId.value = ''; linkSummaryDailyRows.value = []; linkSummaryDailyError.value = ''; await applyRange(); }
+async function clearGlobalFilters() { Object.assign(globalFilters, { link_ids: '', product_code: '', product_name: '', orders: '', brand: '', store_name: '', store_person: '', sale_status: '' }); Object.assign(creationFilter, { mode: 'age', days: 30, start: '', end: '' }); activeLinkPresetId.value = ''; activeLinkPresetFilters.value = []; linkFilters.splice(0); expandedLinkSummaryId.value = ''; linkSummaryDailyRows.value = []; linkSummaryDailyError.value = ''; await applyRange(); }
 function loadTargetForm() { const source = activeTarget.value || {}; targetForm.monthTarget = Number(source.monthTarget || 0); targetForm.profitRate = Number(source.profitRate || 0); targetForm.persons = { ...(source.persons || {}) }; targetForm.brands = { ...(source.brands || {}) }; }
 async function saveCurrentTargets() { savingTargets.value = true; targetMessage.value = ''; try { await saveTargets(activeMonth.value, { monthTarget: targetForm.monthTarget || '', profitRate: targetForm.profitRate || '', persons: targetForm.persons, brands: targetForm.brands }); targetMessage.value = '已保存并同步到 API'; } catch (err) { targetMessage.value = err.message; } finally { savingTargets.value = false; } }
 function createStandardFilterConfig(open = true) {
@@ -3019,6 +3104,67 @@ function standardFilterParams(row) {
 }
 async function queryStandardRow(row) { const config = row.filterConfig; config.querying = true; config.message = ''; try { const result = await queryLinks(standardFilterParams(row)); config.previewRows = result.data || []; config.previewMeta = { total: result.total || 0, page: result.page || 1, pages: result.pages || 0, size: result.size || config.pageSize }; config.message = `匹配 ${Number(result.total || 0).toLocaleString()} 组`; } catch (err) { config.previewRows = []; config.previewMeta = { total: 0, page: 1, pages: 0, size: config.pageSize }; config.message = err.message || '查询失败'; } finally { config.querying = false; } }
 function exportStandardRow(row) { const config = row.filterConfig; if (!config.previewRows.length) return; const selected = config.visibleFields === null ? linkColumnOptions.value : linkColumnOptions.value.filter((column) => config.visibleFields.includes(column.key)); if (!selected.length) return; const escape = (value) => `"${String(value ?? '').replaceAll('"', '""')}"`; const header = selected.map((column) => escape(column.label)).join(','); const rows = config.previewRows.map((item) => selected.map((column) => escape(formatLinkValue(item[column.key], column.key, item))).join(',')); const blob = new Blob([`\uFEFF${[header, ...rows].join('\n')}`], { type: 'text/csv;charset=utf-8' }); const anchor = document.createElement('a'); anchor.href = URL.createObjectURL(blob); anchor.download = `link_setting_${row.id || 'draft'}_${new Date().toISOString().slice(0, 10)}.csv`; anchor.click(); URL.revokeObjectURL(anchor.href); }
+const operationTaskStatusLabels = Object.freeze({ pending: '排队中', running: '执行中', cancelling: '中断中', completed: '已完成', failed: '失败', cancelled: '已取消' });
+function operationTaskStatusLabel(status) { return operationTaskStatusLabels[status] || status || '未知'; }
+function operationTaskStatusTone(status) { return `is-${status || 'unknown'}`; }
+function operationTaskCanCancel(task) { return ['pending', 'running'].includes(task?.status); }
+function formatOperationDateTime(value) {
+  if (!value) return '—';
+  return String(value).replace('T', ' ').slice(0, 19);
+}
+function operationTaskQueueHint(task) {
+  if (task?.status === 'running') return '当前执行';
+  if (task?.status === 'cancelling') return '等待执行端确认';
+  if (task?.status === 'pending' && task?.scheduled_at) return `计划于 ${formatOperationDateTime(task.scheduled_at)} 执行`;
+  return task?.queue_position ? `排队第 ${task.queue_position} 位` : '等待排队';
+}
+function formatOperationStores(task) {
+  const stores = [...new Set((Array.isArray(task?.store_names) ? task.store_names : []).filter(Boolean))];
+  if (!stores.length) return '未识别店铺';
+  return stores.length > 2 ? `${stores.slice(0, 2).join('、')} 等 ${stores.length} 家` : stores.join('、');
+}
+async function loadOperationQueueNow() {
+  if (operationQueueLoading.value) return;
+  operationQueueLoading.value = true;
+  operationQueueError.value = '';
+  try {
+    const response = await fetchOperationQueue();
+    operationQueue.value = {
+      tasks: response.tasks || [],
+      history: response.history || [],
+      summary: { pending: 0, running: 0, cancelling: 0, completed: 0, failed: 0, cancelled: 0, ...(response.summary || {}) },
+    };
+  } catch (err) {
+    operationQueueError.value = err.message || '任务队列加载失败';
+  } finally {
+    operationQueueLoading.value = false;
+  }
+}
+async function interruptOperationTask(task) {
+  if (!operationTaskCanCancel(task)) return;
+  operationCancellingId.value = task.id;
+  operationQueueError.value = '';
+  try {
+    await cancelOperationTask(task.id);
+    await loadOperationQueueNow();
+  } catch (err) {
+    operationQueueError.value = err.message || '任务中断失败';
+  } finally {
+    operationCancellingId.value = '';
+    operationInterruptConfirmId.value = '';
+  }
+}
+function stopOperationQueuePolling() {
+  if (operationQueueTimer) window.clearInterval(operationQueueTimer);
+  operationQueueTimer = null;
+}
+function startOperationQueuePolling() {
+  stopOperationQueuePolling();
+  loadOperationQueueNow();
+  operationQueueTimer = window.setInterval(() => {
+    if (activeTab.value === 'admin') loadOperationQueueNow();
+  }, 5000);
+}
 function resetLinks() {
   Object.assign(linkQuery, { search: '', store_person: '', profit_rate_lte: '', size: 20 });
   linkDataLinkIds.value = '';
@@ -3044,6 +3190,11 @@ function toggleAllLinks(event) { selectedLinks.value = event.target.checked ? li
 async function submitSelectedLinks() {
   const linkIds = [...delistOperationIds.value];
   if (!linkIds.length) return;
+  const schedule = resolveOperationSchedule(delistScheduleMode.value, delistScheduledAt.value);
+  if (schedule.error) {
+    delistMessage.value = schedule.error;
+    return;
+  }
   delisting.value = true;
   delistMessage.value = '';
   try {
@@ -3055,11 +3206,13 @@ async function submitSelectedLinks() {
       operation_label: '产品下架',
       link_ids: linkIds,
       store_names: [...new Set(selectedDelistLinkRows.value.map((item) => item.storeName).filter(Boolean))],
+      ...schedule.payload,
       operator: '链接监控',
     });
     if (!response?.success) throw new Error(response?.error || '产品下架提交失败');
     delistConfirmOpen.value = false;
-    window.alert(`已提交 ${linkIds.length} 条下架任务`);
+    await loadOperationQueueNow();
+    window.alert(schedule.payload.schedule_mode === 'scheduled' ? `已安排 ${linkIds.length} 条下架任务于 ${schedule.displayTime} 执行` : `已提交 ${linkIds.length} 条下架任务`);
     selectedPromotionIds.value = [];
     selectedLinks.value = [];
     delistTargetIds.value = [];
@@ -3072,12 +3225,16 @@ async function submitSelectedLinks() {
 function openDelistConfirm() {
   if (!selectedOperationIds.value.length) return;
   delistTargetIds.value = [];
+  delistScheduleMode.value = 'immediate';
+  delistScheduledAt.value = '';
   delistMessage.value = '';
   delistConfirmOpen.value = true;
 }
 function openRowDelistConfirm(row) {
   if (!row?.linkId) return;
   delistTargetIds.value = [String(row.linkId)];
+  delistScheduleMode.value = 'immediate';
+  delistScheduledAt.value = '';
   delistMessage.value = '';
   delistConfirmOpen.value = true;
 }
@@ -3093,6 +3250,12 @@ const selectedLinkRows = computed(() => selectedOperationIds.value.map((linkId) 
   const linkRow = links.value.find((item) => String(item['链接id']) === String(linkId));
   return { linkId, storeName: promotionRow?.storeName || linkRow?.['店铺名称'] || '' };
 }));
+const promotionAdjustOperationIds = computed(() => promotionAdjustTargetIds.value.length ? promotionAdjustTargetIds.value : selectedOperationIds.value);
+const selectedAdjustLinkRows = computed(() => promotionAdjustOperationIds.value.map((linkId) => {
+  const promotionRow = promotionRows.value.find((item) => String(item.linkId) === String(linkId));
+  const linkRow = links.value.find((item) => String(item['链接id']) === String(linkId));
+  return { linkId, storeName: promotionRow?.storeName || linkRow?.['店铺名称'] || '' };
+}));
 const delistOperationIds = computed(() => delistTargetIds.value.length ? delistTargetIds.value : selectedOperationIds.value);
 const selectedDelistLinkRows = computed(() => delistOperationIds.value.map((linkId) => {
   const promotionRow = promotionRows.value.find((item) => String(item.linkId) === String(linkId));
@@ -3101,12 +3264,40 @@ const selectedDelistLinkRows = computed(() => delistOperationIds.value.map((link
 }));
 function openPromotionAdjust() {
   if (!selectedOperationIds.value.length) return;
+  promotionAdjustTargetIds.value = [...selectedOperationIds.value];
   adjustPreset.value = 0.05;
+  adjustScheduleMode.value = 'immediate';
+  adjustScheduledAt.value = '';
+  adjustMessage.value = '';
+  adjustModalOpen.value = true;
+}
+function openRowPromotionAdjust(row) {
+  if (!row?.linkId) return;
+  promotionAdjustTargetIds.value = [String(row.linkId)];
+  adjustPreset.value = 0.05;
+  adjustScheduleMode.value = 'immediate';
+  adjustScheduledAt.value = '';
   adjustMessage.value = '';
   adjustModalOpen.value = true;
 }
 function closePromotionAdjust() {
-  if (!adjustingPromotion.value) adjustModalOpen.value = false;
+  if (!adjustingPromotion.value) {
+    adjustModalOpen.value = false;
+    promotionAdjustTargetIds.value = [];
+  }
+}
+function resolveOperationSchedule(mode, value) {
+  if (mode !== 'scheduled') return { payload: { schedule_mode: 'immediate', scheduled_at: null }, displayTime: '' };
+  if (!value) return { error: '请选择定时执行时间' };
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return { error: '定时执行时间格式不正确' };
+  if (parsed.getTime() <= Date.now()) return { error: '定时执行时间必须晚于当前时间' };
+  // datetime-local 没有时区；提交浏览器当前时区偏移，服务器可将它换算成本地执行时间。
+  const offsetMinutes = -parsed.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const absoluteOffset = Math.abs(offsetMinutes);
+  const offset = `${sign}${String(Math.floor(absoluteOffset / 60)).padStart(2, '0')}:${String(absoluteOffset % 60).padStart(2, '0')}`;
+  return { payload: { schedule_mode: 'scheduled', scheduled_at: `${value}:00${offset}` }, displayTime: value.replace('T', ' ') };
 }
 async function submitPromotionAdjust() {
   const preset = promotionAdjustPresets.find((item) => item.value === adjustPreset.value);
@@ -3115,6 +3306,16 @@ async function submitPromotionAdjust() {
     return;
   }
   const value = preset.value;
+  const linkIds = [...promotionAdjustOperationIds.value];
+  if (!linkIds.length) {
+    adjustMessage.value = '请至少选择一条链接';
+    return;
+  }
+  const schedule = resolveOperationSchedule(adjustScheduleMode.value, adjustScheduledAt.value);
+  if (schedule.error) {
+    adjustMessage.value = schedule.error;
+    return;
+  }
   adjustingPromotion.value = true;
   adjustMessage.value = '';
   try {
@@ -3127,17 +3328,20 @@ async function submitPromotionAdjust() {
       adjustment_preset_key: preset.key,
       adjustment_label: preset.label,
       adjustment_display: preset.display,
-      link_ids: [...selectedOperationIds.value],
-      store_names: selectedLinkRows.value.map((item) => item.storeName),
+      link_ids: linkIds,
+      store_names: selectedAdjustLinkRows.value.map((item) => item.storeName),
+      ...schedule.payload,
       direction: 'up',
       value,
       operator: '链接监控',
     });
     if (!response?.success) throw new Error(response?.error || '调整投产提交失败');
     adjustModalOpen.value = false;
-    window.alert(`已提交 ${selectedOperationIds.value.length} 条调整投产任务`);
+    await loadOperationQueueNow();
+    window.alert(schedule.payload.schedule_mode === 'scheduled' ? `已安排 ${linkIds.length} 条调整投产任务于 ${schedule.displayTime} 执行` : `已提交 ${linkIds.length} 条调整投产任务`);
     selectedPromotionIds.value = [];
     selectedLinks.value = [];
+    promotionAdjustTargetIds.value = [];
   } catch (err) {
     adjustMessage.value = err.message || '调整投产提交失败';
   } finally {
@@ -3181,6 +3385,11 @@ watch(productProfitRangeRows, (rows) => {
 watch(standards, (rows) => {
   standardRows.value = (rows || []).map((row) => ({ ...row, brand: '', productCode: '', productName: '', filterConfig: normalizeStandardFilterConfig(row.filterConfig, row), _key: `standard-${row.id}` }));
 }, { deep: true, immediate: true });
+watch(activeTab, (tab) => {
+  if (tab === 'admin') startOperationQueuePolling();
+  else stopOperationQueuePolling();
+});
+onBeforeUnmount(stopOperationQueuePolling);
 onMounted(async () => {
   try {
     const savedColumns = JSON.parse(localStorage.getItem('link-monitor-promotion-columns-template') || 'null');
