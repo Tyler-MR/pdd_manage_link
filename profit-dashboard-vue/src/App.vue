@@ -76,7 +76,7 @@
               <button class="button danger compact" :disabled="promotionDimension !== 'link' || !selectedOperationIds.length" title="下架当前已勾选链接" @click="openDelistConfirm">📦 产品下架</button>
             </div>
             <div class="creation-filter-row" aria-label="链接创建时间筛选">
-              <label>链接创建时间 <select v-model="creationFilter.mode"><option value="age">截至昨日近 N 天</option><option value="custom">指定创建日期</option></select></label>
+              <label>链接创建时间 <select v-model="creationFilter.mode"><option value="all">全部链接</option><option value="age">截至昨日近 N 天</option><option value="custom">指定创建日期</option></select></label>
               <template v-if="creationFilter.mode === 'age'">
                 <button v-for="preset in creationPresetOptions" :key="preset.key" type="button" class="range-chip" :class="{ active: creationFilter.days === preset.days }" @click="creationFilter.days = preset.days">{{ preset.label }}</button>
                 <label class="creation-days-input">自定义 <input v-model.number="creationFilter.days" type="number" min="1" max="3650" /></label>
@@ -523,8 +523,9 @@
                             <div v-for="(filter, index) in row.filterConfig.filters" :key="filter.id" class="standard-filter-row">
                               <input v-model="filter.fieldSearch" class="standard-filter-field-search" placeholder="搜索字段" aria-label="搜索字段" />
                               <select v-model="filter.field" class="link-filter-field" aria-label="选择筛选字段" @change="onStandardFilterFieldChange(row, filter); queryStandardRow(row)"><option value="">— 选择字段 —</option><option v-if="filter.fieldSearch && !standardFilterFieldOptions(filter).length" value="" disabled>没有匹配字段</option><option v-for="field in standardFilterFieldOptions(filter)" :key="field.key" :value="field.key">{{ field.label }}</option></select>
-                              <select v-model="filter.op" class="link-filter-op" @change="normalizeStandardFilterOperator(row, filter); queryStandardRow(row)"><option v-if="standardFilterType(row, filter) === 'text'" value="contains">包含</option><option value="eq">=</option><option v-if="standardFilterType(row, filter) !== 'text'" value="between">区间</option><option v-if="standardFilterType(row, filter) !== 'text'" value="gte">≥</option><option v-if="standardFilterType(row, filter) !== 'text'" value="lte">≤</option></select>
+                              <select v-model="filter.op" class="link-filter-op" @change="normalizeStandardFilterOperator(row, filter); queryStandardRow(row)"><option v-if="filter.field !== '负责人' && standardFilterType(row, filter) === 'text'" value="contains">包含</option><option value="eq">=</option><option v-if="filter.field !== '负责人' && standardFilterType(row, filter) !== 'text'" value="between">区间</option><option v-if="filter.field !== '负责人' && standardFilterType(row, filter) !== 'text'" value="gte">≥</option><option v-if="filter.field !== '负责人' && standardFilterType(row, filter) !== 'text'" value="lte">≤</option></select>
                               <select v-if="filter.field === '品牌'" v-model="filter.v1" class="link-filter-value standard-brand-value" @change="queryStandardRow(row)"><option value="">选择品牌</option><option v-for="brand in brandOptions" :key="brand" :value="brand">{{ brand }}</option></select>
+                              <select v-else-if="filter.field === '负责人'" v-model="filter.v1" class="link-filter-value standard-person-value" @change="queryStandardRow(row)"><option value="">选择负责人</option><option v-for="person in peopleNames" :key="person" :value="person">{{ person }}</option></select>
                               <input v-else v-model="filter.v1" :type="standardFilterInputType(row, filter)" class="link-filter-value" :placeholder="standardFilterPlaceholder(row, filter)" @change="queryStandardRow(row)" @keyup.enter="queryStandardRow(row)" />
                               <input v-if="standardFilterUsesSecondValue(row, filter)" v-model="filter.v2" :type="standardFilterInputType(row, filter)" class="link-filter-value" placeholder="上限" @change="queryStandardRow(row)" @keyup.enter="queryStandardRow(row)" />
                               <button type="button" class="filter-remove-btn" title="移除此条件" @click="removeStandardFilter(row, index)">×</button>
@@ -684,7 +685,7 @@ const colorTokens = Object.freeze({
 });
 const brandColors = Object.freeze({ 浪奇: colorTokens.blue, 白牌: colorTokens.gray, 威王: colorTokens.green, 舒蕾: colorTokens.purple });
 
-const { data, status, targets, standards, loading, error, lastUpdated, links, linksMeta, linksLoading, linkFields: linkFieldsRef, linkDashboard, linkDashboardLoading, linkSummary, linkSummaryLoading, availableDates, loadAll, loadPromotionSummary, loadLinkOperatingSummary, loadPromotionHourly, refresh, queryLinks, loadLinks, loadLinkDashboard, loadLinkSummary, saveTargets, saveStandard, deleteStandard, submitDelist, submitPromotionAdjust: sendPromotionAdjust, loadOperationQueue: fetchOperationQueue, cancelOperationTask } = useProfitData();
+const { data, status, targets, standards, loading, error, lastUpdated, links, linksMeta, linksLoading, linkFields: linkFieldsRef, filterOptions: filterOptionsRef, linkDashboard, linkDashboardLoading, linkSummary, linkSummaryLoading, availableDates, loadAll, loadPromotionSummary, loadLinkOperatingSummary, loadPromotionHourly, refresh, queryLinks, loadLinks, loadLinkDashboard, loadLinkSummary, saveTargets, saveStandard, deleteStandard, submitDelist, submitPromotionAdjust: sendPromotionAdjust, loadOperationQueue: fetchOperationQueue, cancelOperationTask } = useProfitData();
 // 字段接口首次加载或热更新期间可能暂时没有返回 ref；当前数据库字段仍由 linkFieldOrder 提供完整兜底。
 const linkFields = linkFieldsRef || ref([]);
 const activeTab = ref('promotion');
@@ -695,7 +696,7 @@ const dateEnd = ref('');
 const rangePreset = ref('');
 const datePresetOptions = Object.freeze([{ key: 'yesterday', label: '昨日' }, { key: '3d', label: '近 3 天' }, { key: '7d', label: '近 7 天' }, { key: '14d', label: '近 14 天' }, { key: '30d', label: '近 30 天' }]);
 const creationPresetOptions = Object.freeze([{ key: 'yesterday', label: '昨日', days: 1 }, { key: '3d', label: '3天', days: 3 }, { key: '7d', label: '7天', days: 7 }, { key: '14d', label: '14天', days: 14 }, { key: '30d', label: '30天', days: 30 }]);
-const creationFilter = reactive({ mode: 'age', days: 30, start: '', end: '' });
+const creationFilter = reactive({ mode: 'all', days: 30, start: '', end: '' });
 const activeMonth = ref('');
 const analysisDimension = ref('brand');
 const analysisMetric = ref('profitRate');
@@ -867,7 +868,11 @@ let linkRefreshTimer = null;
 const currentNav = computed(() => navItems.find((item) => item.key === activeTab.value) || navItems[0]);
 const hasData = computed(() => (data.value.dailyOverall || []).length > 0);
 const statusText = computed(() => status.value?.database ? `${status.value.database.rows?.toLocaleString?.() || 0} 行数据` : '等待状态');
-const peopleNames = computed(() => (data.value.peopleSummary || []).map((item) => item.name).filter(Boolean));
+const peopleNames = computed(() => {
+  const configured = filterOptionsRef?.value?.people || [];
+  if (configured.length) return configured;
+  return (data.value.peopleSummary || []).map((item) => item.name).filter(Boolean);
+});
 const brandNames = computed(() => {
   const names = new Set(Object.keys(targets.value[activeMonth.value]?.brands || {}));
   (data.value.allStores || []).forEach((item) => names.add(brandOf(item.store)));
@@ -884,7 +889,7 @@ const filteredDays = computed(() => (data.value.dailyOverall || []).filter((item
   return (!dateStart.value || day >= dateStart.value) && (!dateEnd.value || day <= dateEnd.value);
 }));
 const rangeHint = computed(() => filteredDays.value.length ? `${dateStart.value} 至 ${dateEnd.value} · ${filteredDays.value.length} 天` : '等待 API 返回日期');
-const creationFilterHint = computed(() => creationFilter.mode === 'age' ? `链接创建：近 ${Math.max(1, Number(creationFilter.days || 1))} 天（截至昨日）` : `链接创建：${creationFilter.start || '起始'} 至 ${creationFilter.end || '结束'}`);
+const creationFilterHint = computed(() => creationFilter.mode === 'all' ? '链接创建：全部链接' : creationFilter.mode === 'age' ? `链接创建：近 ${Math.max(1, Number(creationFilter.days || 1))} 天（截至昨日）` : `链接创建：${creationFilter.start || '起始'} 至 ${creationFilter.end || '结束'}`);
 const derivedGrand = computed(() => {
   const total = filteredDays.value.reduce((acc, item) => {
     ['revenue', 'cost', 'shipping', 'promotion', 'profit', 'orders'].forEach((key) => { acc[key] += Number(item[key] || 0); });
@@ -2958,7 +2963,7 @@ function scrollPromotionKpis(direction) {
 function goalNodeExpanded(key) { return expandedGoalNodes.value.has(key); }
 function toggleGoalNode(key) { const next = new Set(expandedGoalNodes.value); if (next.has(key)) { next.delete(key); if (key === 'root') { next.delete('brand'); next.delete('person'); } } else next.add(key); expandedGoalNodes.value = next; }
 function setRange(preset) { rangePreset.value = preset; const dates = availableDates.value; if (!dates.length) return; const end = dates.at(-1); if (preset === 'all') { dateStart.value = dates[0]; dateEnd.value = end; } else if (preset === 'month') { const month = end.slice(0, 7); const inMonth = dates.filter((date) => date.startsWith(month)); dateStart.value = inMonth[0]; dateEnd.value = inMonth.at(-1); } else { const days = preset === 'yesterday' ? 1 : preset === '3d' ? 3 : preset === '14d' ? 14 : preset === '30d' ? 30 : 7; dateStart.value = dates[Math.max(0, dates.length - days)]; dateEnd.value = end; } }
-function creationParams() { if (creationFilter.mode === 'custom') return { creation_start: creationFilter.start, creation_end: creationFilter.end }; return { creation_days: Math.max(1, Number(creationFilter.days || 1)) }; }
+function creationParams() { if (creationFilter.mode === 'all') return {}; if (creationFilter.mode === 'custom') return { creation_start: creationFilter.start, creation_end: creationFilter.end }; return { creation_days: Math.max(1, Number(creationFilter.days || 1)) }; }
 function ordersFilterParams() {
   const rawOrders = String(globalFilters.orders ?? '').trim();
   // 输入框为空代表“不按单量筛选”；只有用户明确输入 0，才执行单量等于 0 的筛选。
@@ -2985,7 +2990,7 @@ function globalFilterParams() {
   };
 }
 async function applyRange() { if (dateStart.value > dateEnd.value) [dateStart.value, dateEnd.value] = [dateEnd.value, dateStart.value]; if (creationFilter.mode === 'custom' && creationFilter.start && creationFilter.end && creationFilter.start > creationFilter.end) [creationFilter.start, creationFilter.end] = [creationFilter.end, creationFilter.start]; linkDataDateStart.value = dateStart.value; linkDataDateEnd.value = dateEnd.value; rangePreset.value = ''; await loadAll(globalFilterParams()); if (activeTab.value === 'promotion') await refreshPromotionLinkViews(); else await refreshLinkViews(); }
-async function clearGlobalFilters() { Object.assign(globalFilters, { link_ids: '', product_code: '', product_name: '', orders: '', brand: '', store_name: '', store_person: '', sale_status: '' }); Object.assign(creationFilter, { mode: 'age', days: 30, start: '', end: '' }); activeLinkPresetId.value = ''; activeLinkPresetFilters.value = []; linkFilters.splice(0); expandedLinkSummaryId.value = ''; linkSummaryDailyRows.value = []; linkSummaryDailyError.value = ''; await applyRange(); }
+async function clearGlobalFilters() { Object.assign(globalFilters, { link_ids: '', product_code: '', product_name: '', orders: '', brand: '', store_name: '', store_person: '', sale_status: '' }); Object.assign(creationFilter, { mode: 'all', days: 30, start: '', end: '' }); activeLinkPresetId.value = ''; activeLinkPresetFilters.value = []; linkFilters.splice(0); expandedLinkSummaryId.value = ''; linkSummaryDailyRows.value = []; linkSummaryDailyError.value = ''; await applyRange(); }
 function loadTargetForm() { const source = activeTarget.value || {}; targetForm.monthTarget = Number(source.monthTarget || 0); targetForm.profitRate = Number(source.profitRate || 0); targetForm.persons = { ...(source.persons || {}) }; targetForm.brands = { ...(source.brands || {}) }; }
 async function saveCurrentTargets() { savingTargets.value = true; targetMessage.value = ''; try { await saveTargets(activeMonth.value, { monthTarget: targetForm.monthTarget || '', profitRate: targetForm.profitRate || '', persons: targetForm.persons, brands: targetForm.brands }); targetMessage.value = '已保存并同步到 API'; } catch (err) { targetMessage.value = err.message; } finally { savingTargets.value = false; } }
 function createStandardFilterConfig(open = true) {
@@ -2993,7 +2998,10 @@ function createStandardFilterConfig(open = true) {
 }
 function normalizeStandardFilterConfig(source = {}, legacy = {}) {
   const raw = source && typeof source === 'object' ? source : {};
-  const filters = Array.isArray(raw.filters) ? raw.filters.map((filter, index) => ({ id: filter.id || `standard-${Date.now()}-${index}`, field: filter.field || '', fieldSearch: '', op: filter.op || 'contains', v1: filter.v1 || '', v2: filter.v2 || '' })) : [];
+  const filters = Array.isArray(raw.filters) ? raw.filters.map((filter, index) => {
+    const field = filter.field || '';
+    return { id: filter.id || `standard-${Date.now()}-${index}`, field, fieldSearch: '', op: field === '负责人' ? 'eq' : (filter.op || 'contains'), v1: filter.v1 || '', v2: filter.v2 || '' };
+  }) : [];
   const addLegacyFilter = (field, value) => {
     if (value && !filters.some((filter) => filter.field === field)) filters.unshift({ id: `standard-legacy-${Date.now()}-${field}`, field, fieldSearch: '', op: 'contains', v1: value, v2: '' });
   };
@@ -3016,7 +3024,7 @@ function normalizeStandardFilterConfig(source = {}, legacy = {}) {
   };
 }
 function serializeStandardFilterConfig(config = {}) {
-  return { pageSize: Number(config.pageSize || 20), visibleFields: config.visibleFields === null ? null : [...(config.visibleFields || [])], filters: (config.filters || []).map(({ field, op, v1, v2 }) => ({ field, op, v1, v2 })) };
+  return { pageSize: Number(config.pageSize || 20), visibleFields: config.visibleFields === null ? null : [...(config.visibleFields || [])], filters: (config.filters || []).map(({ field, op, v1, v2 }) => ({ field, op: field === '负责人' ? 'eq' : op, v1, v2 })) };
 }
 function addStandardRow() { standardRows.value.push({ _key: `new-${Date.now()}`, dimensionType: 'brand', brand: '', productCode: '', productName: '', metricKey: 'profitRate', operator: 'gte', thresholdMin: 0, thresholdMax: null, enabled: true, note: '', filterConfig: createStandardFilterConfig(true) }); }
 async function saveStandardRow(row) { row.saving = true; try { const payload = { ...row, brand: '', productCode: '', productName: '', filterConfig: serializeStandardFilterConfig(row.filterConfig) }; delete payload._key; delete payload.saving; await saveStandard(payload); } catch (err) { window.alert(err.message || '标准保存失败'); } finally { row.saving = false; } }
@@ -3129,14 +3137,14 @@ function standardFilterType(row, filter) { return linkColumnOptions.value.find((
 function standardFilterInputType(row, filter) { const type = standardFilterType(row, filter); return type === 'date' ? 'date' : type === 'number' ? 'number' : 'text'; }
 function standardFilterPlaceholder(row, filter) { return filter.field === '链接id' ? '支持逗号分隔多个链接 ID' : standardFilterType(row, filter) === 'text' ? '包含值' : '值'; }
 function standardFilterUsesSecondValue(row, filter) { return standardFilterType(row, filter) !== 'text' && filter.op === 'between'; }
-function onStandardFilterFieldChange(row, filter) { filter.fieldSearch = ''; filter.op = standardFilterType(row, filter) === 'text' ? 'contains' : 'between'; filter.v1 = ''; filter.v2 = ''; }
-function normalizeStandardFilterOperator(row, filter) { const type = standardFilterType(row, filter); if (type === 'text' && !['contains', 'eq', 'equals'].includes(filter.op)) filter.op = 'contains'; if (type !== 'text' && !['between', 'eq', 'equals', 'gte', 'lte'].includes(filter.op)) filter.op = 'between'; if (filter.op !== 'between') filter.v2 = ''; }
+function onStandardFilterFieldChange(row, filter) { filter.fieldSearch = ''; filter.op = filter.field === '负责人' ? 'eq' : (standardFilterType(row, filter) === 'text' ? 'contains' : 'between'); filter.v1 = ''; filter.v2 = ''; }
+function normalizeStandardFilterOperator(row, filter) { const type = standardFilterType(row, filter); if (filter.field === '负责人') { filter.op = 'eq'; filter.v2 = ''; return; } if (type === 'text' && !['contains', 'eq', 'equals'].includes(filter.op)) filter.op = 'contains'; if (type !== 'text' && !['between', 'eq', 'equals', 'gte', 'lte'].includes(filter.op)) filter.op = 'between'; if (filter.op !== 'between') filter.v2 = ''; }
 function addStandardFilter(row) { row.filterConfig.filters.push({ id: `standard-filter-${++standardFilterId}`, field: '', fieldSearch: '', op: 'contains', v1: '', v2: '' }); }
 function removeStandardFilter(row, index) { row.filterConfig.filters.splice(index, 1); }
 function toggleStandardColumn(row, key, checked) { const allKeys = linkColumnOptions.value.map((column) => column.key); const selected = row.filterConfig.visibleFields === null ? [...allKeys] : [...row.filterConfig.visibleFields]; if (checked && !selected.includes(key)) selected.push(key); if (!checked) { const index = selected.indexOf(key); if (index >= 0) selected.splice(index, 1); } row.filterConfig.visibleFields = selected.length === allKeys.length ? null : selected; }
 function selectAllStandardColumns(row, checked) { row.filterConfig.visibleFields = checked ? null : []; }
 function standardActiveFilters(row) {
-  return (row.filterConfig.filters || []).filter((filter) => filter.field && (filter.v1 || filter.v2)).map(({ field, op, v1, v2 }) => ({ field, op, v1, v2 }));
+  return (row.filterConfig.filters || []).filter((filter) => filter.field && (filter.v1 || filter.v2)).map(({ field, op, v1, v2 }) => ({ field, op: field === '负责人' ? 'eq' : op, v1, v2 }));
 }
 function standardFilterSummary(row) { return standardActiveFilters(row).map((filter) => { const label = linkColumnOptions.value.find((column) => column.key === filter.field)?.label || filter.field; const text = filter.op === 'between' ? `${filter.v1} ~ ${filter.v2}` : filter.op === 'gte' ? `≥ ${filter.v1}` : filter.op === 'lte' ? `≤ ${filter.v1}` : filter.op === 'eq' || filter.op === 'equals' ? `= ${filter.v1}` : `包含 ${filter.v1}`; return `${label} ${text}`; }).join(' AND '); }
 function standardFilterParams(row) {

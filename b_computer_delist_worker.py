@@ -83,6 +83,20 @@ def scheduled_datetime(task):
         return None
 
 
+def created_datetime(task):
+    """读取任务发起时间，供统一队列稳定执行 FIFO。"""
+    raw = str(task.get("created_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except ValueError:
+        return None
+
+
 def schedule_is_due(task):
     planned_at = scheduled_datetime(task)
     if planned_at is None and str(task.get("scheduled_at") or "").strip():
@@ -403,8 +417,17 @@ def main():
                 }
                 pending_queue = [item for item in pending_queue if item[0] in remote_pending_ids]
 
-            # 统一队列中的两种任务按原顺序进入同一个 FIFO 队列。
-            for task in remote_tasks:
+            # 服务端的 created_at 是“发起时间”；每轮都按它排序，避免 API 文件中
+            # 混入旧任务或两个来源文件后，B 电脑按返回顺序误执行。
+            ordered_tasks = sorted(
+                remote_tasks,
+                key=lambda task: (
+                    created_datetime(task) is None,
+                    created_datetime(task) or datetime.max,
+                ),
+            )
+            # 统一队列中的两种任务按发起时间进入同一个 FIFO 队列。
+            for task in ordered_tasks:
                 if str(task.get("status") or "pending").lower() != "pending":
                     continue
                 if not schedule_is_due(task):
@@ -415,7 +438,14 @@ def main():
                 if any(item[0] == task_id for item in pending_queue):
                     continue
                 pending_queue.append((task_id, task))
-                print(f"[{now_text()}] 加入队列：{task_id} ({_task_type(task)})，排队 {len(pending_queue)}")
+                print(f"[{now_text()}] 加入队列：{task_id} ({_task_type(task)})，发起于 {task.get('created_at') or '—'}，排队 {len(pending_queue)}")
+
+            pending_queue.sort(
+                key=lambda item: (
+                    created_datetime(item[1]) is None,
+                    created_datetime(item[1]) or datetime.max,
+                )
+            )
 
             # 只允许一个任务占用固定的 Excel 和触发文件。
             if not active_task_id and pending_queue:

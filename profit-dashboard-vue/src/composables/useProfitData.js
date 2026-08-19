@@ -36,6 +36,7 @@ export function useProfitData() {
   const lastUpdated = ref('');
   const links = ref([]);
   const linkFields = ref([]);
+  const filterOptions = ref({ people: [] });
   const linksMeta = ref({ total: 0, page: 1, pages: 0, size: 20 });
   const linksLoading = ref(false);
   const linkDashboard = ref({
@@ -65,11 +66,12 @@ export function useProfitData() {
       Object.entries(params).forEach(([key, value]) => {
         if (value !== undefined && value !== null && value !== '') query.set(key, value);
       });
-      const [dashboard, system, targetResponse, linkFieldsResponse, standardsResponse] = await Promise.all([
+      const [dashboard, system, targetResponse, linkFieldsResponse, filterOptionsResponse, standardsResponse] = await Promise.all([
         request(`/api/v3/data?${query.toString()}`),
         request('/api/v3/status'),
         request('/api/v3/admin/targets'),
         request('/api/v3/link-fields'),
+        request('/api/v3/filter-options'),
         request('/api/v3/admin/standards'),
       ]);
       if (!dashboard?.success || !dashboard?.data) throw new Error(dashboard?.error || '看板数据为空');
@@ -77,6 +79,7 @@ export function useProfitData() {
       status.value = system;
       targets.value = targetResponse?.data || {};
       linkFields.value = linkFieldsResponse?.fields || [];
+      filterOptions.value = { people: filterOptionsResponse?.people || [] };
       standards.value = standardsResponse?.data || [];
       lastUpdated.value = new Date().toLocaleString('zh-CN', { hour12: false });
     } catch (err) {
@@ -265,6 +268,7 @@ export function useProfitData() {
     lastUpdated,
     links,
     linkFields,
+    filterOptions,
     linksMeta,
     linksLoading,
     linkDashboard,

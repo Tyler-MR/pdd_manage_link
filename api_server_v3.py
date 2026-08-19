@@ -1727,13 +1727,35 @@ def _history_tasks(task_type=None):
     return list(reversed(tasks[-50:]))
 
 
+def _operation_created_datetime(task):
+    """把任务发起时间转换成可排序的 datetime；缺失或异常值排在最后。"""
+    raw = str(task.get("created_at") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        # 队列只需要本地时间顺序，统一去掉时区后再比较，避免 naive/aware 混比。
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        return parsed
+    except (TypeError, ValueError):
+        return None
+
+
 def _operation_queue_snapshot():
     """返回统一 FIFO 队列快照，并为待处理任务计算实时排队序号。"""
     tasks = _read_operation_tasks().get("tasks", [])
+    ordered_tasks = sorted(
+        tasks,
+        key=lambda task: (
+            _operation_created_datetime(task) is None,
+            _operation_created_datetime(task) or datetime.max,
+        ),
+    )
     active = []
     history = []
     pending_position = 0
-    for raw_task in tasks:
+    for raw_task in ordered_tasks:
         task = dict(raw_task)
         status = str(task.get("status") or "pending").lower()
         if status == "pending":
@@ -2433,6 +2455,24 @@ def get_link_fields():
         ]
         fields.append({'key': '链接创建时间', 'label': '链接创建时间', 'type': 'date', 'nullable': True})
         return {'success': True, 'fields': fields}
+    finally:
+        conn.close()
+
+
+@app.get("/api/v3/filter-options")
+def get_filter_options():
+    """返回跨页自定义筛选器使用的去重选项。"""
+    conn = get_mysql()
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            f"SELECT DISTINCT TRIM(`负责人`) AS person "
+            f"FROM `{TABLE_NAME}` "
+            "WHERE `负责人` IS NOT NULL AND TRIM(`负责人`) <> '' "
+            "ORDER BY person"
+        )
+        people = [str(row[0]).strip() for row in cursor.fetchall() if row[0] and str(row[0]).strip()]
+        return {"success": True, "people": people}
     finally:
         conn.close()
 
